@@ -87,12 +87,13 @@ def train_epoch(model: nn.Module, loader: DataLoader, optimizer, scheduler,
 
     pbar.close()
     avg_grad_norm = total_grad_norm / grad_norm_count if grad_norm_count > 0 else 0.0
-    return {k: v / num_batches for k, v in total_losses.items()}, skipped_batches, avg_grad_norm
+    return {k: v / max(num_batches, 1) for k, v in total_losses.items()}, skipped_batches, avg_grad_norm
 
 
 @torch.inference_mode()
 def evaluate(model: nn.Module, loader: DataLoader, device: str,
             use_badm: bool = True, use_aadm: bool = True) -> Dict:
+    model.eval()
     all_probs = []
     all_reasoning_probs = []
     all_labels = []
@@ -151,18 +152,33 @@ def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoad
         loss_config = LossConfig(
             lambda_main=config.get("lambda_main", 1.0),
             lambda_branch=config.get("lambda_branch", 0.3),
-            lambda_orthogonal=config.get("lambda_orthogonal", 0.1),
+            lambda_orthogonal=config.get("lambda_orthogonal", 0.01),
             lambda_deep_supervision=config.get("lambda_deep_supervision", 0.05),
-            label_smoothing=config.get("label_smoothing", 0.1),
+            label_smoothing=config.get("label_smoothing", 0.05),
             orthogonality_margin=config.get("orthogonality_margin", 0.1)
         )
     loss_fn = RADARLoss(loss_config)
 
-    optimizer = AdamW(model.parameters(), lr=config["learning_rate"],
+    freeze_epochs = config.get("freeze_backbone_epochs", 3)
+
+    if freeze_epochs > 0 and hasattr(model, 'freeze_backbone'):
+        model.freeze_backbone()
+        print(f"Backbone frozen for first {freeze_epochs} epochs")
+
+    backbone_lr = config["learning_rate"] * 0.1
+    if hasattr(model, 'get_head_params'):
+        param_groups = [
+            {"params": model.get_head_params(), "lr": config["learning_rate"]},
+            {"params": model.get_backbone_params(), "lr": backbone_lr},
+        ]
+    else:
+        param_groups = model.parameters()
+
+    optimizer = AdamW(param_groups, lr=config["learning_rate"],
                      weight_decay=config["weight_decay"])
 
     total_steps = len(train_loader) * config["num_epochs"] // config["gradient_accumulation_steps"]
-    scheduler = OneCycleLR(optimizer, max_lr=config["learning_rate"],
+    scheduler = OneCycleLR(optimizer, max_lr=[config["learning_rate"], backbone_lr],
                           total_steps=total_steps, pct_start=config["warmup_ratio"])
 
     scaler = GradScaler(enabled=(device=="cuda"))
@@ -175,6 +191,10 @@ def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoad
                "val_reasoning_auc": [], "val_gating_alpha": []}
 
     for epoch in range(config["num_epochs"]):
+        if epoch == freeze_epochs and freeze_epochs > 0 and hasattr(model, 'unfreeze_backbone'):
+            model.unfreeze_backbone()
+            print(f"Backbone unfrozen at epoch {epoch + 1}")
+
         epoch_start = time.time()
 
         train_losses, skipped, grad_norm = train_epoch(model, train_loader, optimizer, scheduler,
@@ -193,7 +213,7 @@ def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoad
         print(f"Epoch {epoch+1}/{config['num_epochs']}: "
               f"Loss={train_losses['total']:.4f}, AUC={val_metrics['auc']:.4f}, "
               f"ReasoningAUC={val_metrics['reasoning_auc']:.4f}, "
-              f"α={val_metrics['gating_alpha']:.3f}, "
+              f"a={val_metrics['gating_alpha']:.3f}, "
               f"ConvDelta={val_metrics['convergence_delta']:.4f}, "
               f"Time={time.time()-epoch_start:.1f}s")
 

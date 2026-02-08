@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""
-Optimized training script for A40 GPU (48GB VRAM)
-Automatically detects and uses optimal settings for available hardware.
-"""
 
 import argparse
 import yaml
@@ -13,19 +9,17 @@ sys.path.append(str(Path(__file__).parent / 'src'))
 
 
 def get_optimal_config(config_path: Path = None):
-    """Load config or use A40 optimal defaults."""
     if config_path and config_path.exists():
         with open(config_path) as f:
             return yaml.safe_load(f)
 
-    # A40 optimal defaults
     return {
         "experiment_name": "radar_a40_optimal",
         "img_size": 224,
         "batch_size": 128,
         "num_epochs": 30,
         "learning_rate": 0.001,
-        "weight_decay": 0.0001,
+        "weight_decay": 0.05,
         "num_workers": 8,
         "prefetch_factor": 4,
         "gradient_accumulation_steps": 1,
@@ -36,10 +30,11 @@ def get_optimal_config(config_path: Path = None):
         "early_stopping_patience": 10,
         "lambda_main": 1.0,
         "lambda_branch": 0.3,
-        "lambda_orthogonal": 0.1,
+        "lambda_orthogonal": 0.01,
         "lambda_deep_supervision": 0.05,
-        "label_smoothing": 0.1,
+        "label_smoothing": 0.05,
         "orthogonality_margin": 0.1,
+        "freeze_backbone_epochs": 3,
         "source_domain": "faceforensics"
     }
 
@@ -58,35 +53,30 @@ def main():
                         help="Use fast config (50%% data, 10 epochs)")
     args = parser.parse_args()
 
-    # Load config
     if args.fast:
         config_path = Path("./configs/a40_fast.yaml")
-        print("🚀 Fast mode: 50% data, 10 epochs, batch_size=256")
+        print("Fast mode: 50% data, 10 epochs, batch_size=256")
     else:
         config_path = Path(args.config)
-        print("⚡ Optimal mode: Full data, 30 epochs, batch_size=128")
+        print("Optimal mode: Full data, 30 epochs, batch_size=128")
 
     config = get_optimal_config(config_path if config_path.exists() else None)
 
-    # Update paths from CLI
     config["data_dir"] = args.data_dir
 
-    # Import and run training
-    from pathlib import Path as P
     import subprocess
 
-    script = "2_train_model_fast.py" if args.fast else "2_train_model.py"
-
     cmd = [
-        sys.executable, script,
+        sys.executable, "2_train_model.py",
         "--data_dir", config["data_dir"],
         "--output_dir", args.output_dir,
         "--batch_size", str(config["batch_size"]),
         "--num_epochs", str(config["num_epochs"]),
-        "--learning_rate", str(config["learning_rate"])
+        "--learning_rate", str(config["learning_rate"]),
+        "--freeze_backbone_epochs", str(config.get("freeze_backbone_epochs", 3))
     ]
 
-    print(f"\n🎯 Running: {' '.join(cmd)}\n")
+    print(f"\nRunning: {' '.join(cmd)}\n")
     subprocess.run(cmd)
 
 

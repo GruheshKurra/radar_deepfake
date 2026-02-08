@@ -9,9 +9,9 @@ from dataclasses import dataclass
 class LossConfig:
     lambda_main: float = 1.0
     lambda_branch: float = 0.3
-    lambda_orthogonal: float = 0.1
+    lambda_orthogonal: float = 0.01
     lambda_deep_supervision: float = 0.05
-    label_smoothing: float = 0.1
+    label_smoothing: float = 0.05
     orthogonality_margin: float = 0.1
 
 

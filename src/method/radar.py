@@ -19,12 +19,13 @@ class RADARConfig:
     img_size: int = 224
     patch_size: int = 16
     embed_dim: int = 384
-    evidence_dim: int = 64
+    evidence_dim: int = 128
     reasoning_iterations: int = 3
     reasoning_heads: int = 4
     fft_size: int = 112
     dropout: float = 0.1
     gating_init: float = 0.5
+    freeze_backbone_epochs: int = 3
 
 
 def _init_weights(m):
@@ -84,6 +85,25 @@ class RADAR(nn.Module):
     @property
     def gating_alpha(self) -> torch.Tensor:
         return torch.sigmoid(self._gating_logit)
+
+    def freeze_backbone(self):
+        for param in self.encoder.parameters():
+            param.requires_grad = False
+
+    def unfreeze_backbone(self):
+        for param in self.encoder.parameters():
+            param.requires_grad = True
+
+    def get_backbone_params(self):
+        return list(self.encoder.parameters())
+
+    def get_head_params(self):
+        head_modules = [self.badm, self.aadm, self.reasoning,
+                        self.external_classifier_dual, self.external_classifier_single]
+        params = [self._gating_logit]
+        for module in head_modules:
+            params.extend(module.parameters())
+        return params
 
     def forward(self, x: torch.Tensor, freq_cached: Optional[torch.Tensor] = None,
                 sobel_cached: Optional[torch.Tensor] = None, use_badm: bool = True,

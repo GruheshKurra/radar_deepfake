@@ -4,240 +4,123 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-RADAR (Reasoning and Artifact Detection for Deepfake Recognition) is a deep learning model for deepfake detection. It uses dual artifact detection modules (boundary and frequency) with iterative evidence refinement through a reasoning module.
+RADAR (Reasoning and Artifact Detection for Deepfake Recognition) is a deep learning model for deepfake detection. It uses dual artifact detection modules (boundary and frequency) with iterative evidence refinement through a reasoning module. This is a research paper implementation.
 
-## Key Architecture
+## Commands
 
-### Three-Component Design
-1. **BADM (Boundary Artifact Detection Module)**: Detects edge inconsistencies via Sobel filtering
-2. **AADM (Frequency Domain Artifact Module)**: Analyzes FFT spectrum with high-pass filtering
-3. **ERM (Evidence Refinement Module)**: Iteratively refines evidence over 3 iterations
-
-### Dual Pathway Fusion
-- **Reasoning Path**: ERM processes evidence through iterative refinement
-- **External Path**: Direct classification from concatenated evidence
-- **Gating Mechanism**: Learnable parameter blends both paths (α=0.5)
-
-## Repository Structure
-
-```
-├── 0_download_combined_dataset.sh  # Download dataset from Kaggle
-├── 2_train_model.py                # Main training script
-├── 3_train_ablation.py             # Ablation study runner
-├── 4_compare_ablations.py          # Results comparison
-├── 5_visualize_attention.py        # Attention visualization
-├── train_a40.py                    # A40 GPU optimized
-├── run_ablations.sh                # Batch ablations
-├── configs/
-│   ├── a40_fast.yaml              # Fast config
-│   └── a40_optimal.yaml           # Production config
-└── src/
-    ├── method/                    # RADAR implementation
-    ├── baselines/                 # Comparison models
-    ├── data/                      # Data loading
-    ├── experiments/               # Training loops
-    ├── analysis/                  # Statistics
-    └── utils/                     # Utilities
-```
-
-## Quick Start
-
-### 1. Setup Environment
+### Training
 ```bash
-conda activate ml  # or your Python 3.11 environment
-pip install -r requirements.txt
+conda activate ml
+python 2_train_model.py --data_dir ./data/combined --experiment_name radar_training --num_epochs 30 --batch_size 128
+python 2_train_model.py --data_dir ./data/combined --batch_size 64 --learning_rate 0.0005 --freeze_backbone_epochs 3
 ```
 
-### 2. Download Dataset
+### Ablation Studies
+```bash
+python 3_train_ablation.py --data_dir ./data/combined --experiment_name ablation_badm_only --use_badm true --use_aadm false
+python 3_train_ablation.py --data_dir ./data/combined --experiment_name ablation_aadm_only --use_badm false --use_aadm true
+python 3_train_ablation.py --data_dir ./data/combined --experiment_name ablation_no_reasoning --reasoning_iterations 1
+./run_ablations.sh
+```
+
+### Compare and Visualize
+```bash
+python 4_compare_ablations.py --output_dir ./outputs
+python 5_visualize_attention.py --checkpoint ./outputs/radar_training/best.pth --data_dir ./data/combined
+```
+
+### Dataset Download
 ```bash
 export KAGGLE_USERNAME=your_username
 export KAGGLE_KEY=your_api_key
 ./0_download_combined_dataset.sh
 ```
 
-### 3. Train Model
-```bash
-# A40 optimal (recommended)
-python train_a40.py --data_dir ./data/combined
+## Architecture
 
-# Or direct training
-python 2_train_model.py \
-  --data_dir ./data/combined \
-  --experiment_name radar_training \
-  --num_epochs 30 \
-  --batch_size 128
+### Three-Component Design
+1. **BADM** (`src/method/boundary.py`): Computes Sobel gradients, encodes via deeper conv pyramid (1→32→64→128→256) with residual blocks and spatial attention, fuses with ViT patch features (mean+max aggregation). Outputs 128-dim evidence.
+2. **AADM** (`src/method/frequency.py`): Multi-scale FFT at 3 frequency bands (cutoffs H/16, H/8, H/4) producing 3-channel input. Encodes via conv pyramid (3→48→96→192→256) with residual blocks, fuses with ViT CLS token. Outputs 128-dim evidence.
+3. **ERM** (`src/method/reasoning.py`): Cross-attention + GRU + LayerNorm + FFN per iteration. Iteratively refines evidence over 3 iterations with feed-forward refinement at each step.
+
+### Forward Pass Flow (`src/method/radar.py`)
+```
+Image → ViT-Small (vit_small_patch16_224, pretrained)
+  ├─ CLS token (384-dim) → AADM → 128-dim evidence
+  └─ Patch tokens (196×384) → BADM → 128-dim evidence
+      ↓
+  Evidence stack (B, 2, 128)
+      ↓
+  ├─ Reasoning path: ERM iterative refinement → logit_reasoning
+  └─ External path: concat evidence → MLP classifier → logit_external
+      ↓
+  Gating: final = α·reasoning + (1-α)·external
+  α = sigmoid(learnable_param), initialized at 0.5
 ```
 
-### 4. Run Ablations
-```bash
-./run_ablations.sh
-```
+### Backbone Freezing
+The ViT backbone is frozen for the first N epochs (default 3) to let BADM/AADM/ERM warm up without destroying pretrained features. After unfreezing, backbone trains at 10x lower learning rate than heads.
 
-### 5. Compare Results
-```bash
-python 4_compare_ablations.py --output_dir ./outputs
-```
+### Loss Function (`src/method/loss.py`)
+Four components combined:
+- `lambda_main=1.0`: BCE on final prediction (label smoothing 0.05)
+- `lambda_branch=0.3`: BCE on individual BADM/AADM branch predictions
+- `lambda_orthogonal=0.01`: Hinge loss on cosine similarity between BADM/AADM evidence (margin=0.1)
+- `lambda_deep_supervision=0.05`: Weighted BCE on each ERM iteration's intermediate predictions
 
-## Training Configuration
+### Key Interfaces
+- Model: `forward(x, freq_cached, sobel_cached, use_badm, use_aadm) → Dict` with keys: logit, prob, reasoning_logit, reasoning_prob, external_logit, gating_alpha, badm_evidence, aadm_evidence, attention_history, iteration_logits, iteration_probs, convergence_delta
+- Loss: `forward(outputs, labels, use_badm, use_aadm) → Dict` with keys: total, main, branch, orthogonal, deep_supervision
+- Baselines: `forward(x, freq_cached, sobel_cached) → Dict` with keys: logit, prob
+- RADAR model methods: `freeze_backbone()`, `unfreeze_backbone()`, `get_backbone_params()`, `get_head_params()`
 
-### A40 GPU (48GB VRAM) - Optimal
-- Batch size: 128
-- Epochs: 30
-- Learning rate: 0.001
-- Workers: 8
-- Gradient accumulation: 1
+## Data Pipeline
 
-### A40 GPU - Fast Mode
-- Batch size: 256
-- Epochs: 10
-- 50% of data
-- Learning rate: 0.002
+### Dataset Structure
+Supports two layouts detected by `is_presplit_dataset()` in `src/data/splits.py`:
+- **Pre-split**: `data_dir/{train,val,test}/{real,fake}/*.{jpg,png,jpeg}`
+- **Single-domain**: `data_dir/{domain_name}/{real,fake}/*.{jpg,png,jpeg}` (auto-split 80/10/10)
 
-## Model Hyperparameters
+### Transforms (`src/data/dataset.py`)
+- Train: Resize(224) → HFlip(0.5) → ShiftScaleRotate(0.3) → ColorJitter(0.3) → CoarseDropout(0.2) → ImageNet normalize
+- Val/Test: Resize(224) → ImageNet normalize
+- GaussianBlur and ImageCompression are intentionally excluded to preserve boundary/frequency artifacts
 
-```python
-img_size = 224
-patch_size = 16
-embed_dim = 384           # ViT-Small
-evidence_dim = 64
-reasoning_iterations = 3
-reasoning_heads = 4
-fft_size = 112
-dropout = 0.1
-```
+## Training Details
 
-## Loss Configuration
+### Optimizer/Scheduler
+AdamW with differential learning rates: heads at base LR, backbone at LR*0.1. OneCycleLR with cosine annealing and 10% warmup. AMP via GradScaler on CUDA. Gradient clipping at norm=1.0.
 
-```python
-lambda_main = 1.0
-lambda_branch = 0.3
-lambda_orthogonal = 0.1
-lambda_deep_supervision = 0.05
-label_smoothing = 0.1
-```
+### Monitoring Metrics
+- `convergence_delta`: |prob_iter3 - prob_iter2|, should be 0.001-0.005
+- `gating_alpha`: evolves from 0.5, indicates reasoning vs external preference
+- `skipped_batches`: should be 0, indicates NaN/Inf instability
+- `grad_norm`: typical 0.5-2.0, >10 indicates instability
 
-## Expected Results
-
-### Combined Dataset (Celeb-DF + FF++)
-- Full RADAR: 90-95% AUC
-- BADM only: 88-92% AUC
-- AADM only: 86-90% AUC
-- No reasoning: 91-94% AUC
-
-### Training Time (A40)
-- ~2 hours for 30 epochs
-- ~15-20 minutes per epoch
-
-## Ablation Studies
-
-Run specific ablations:
-
-```bash
-# BADM only
-python 3_train_ablation.py \
-  --data_dir ./data/combined \
-  --experiment_name ablation_badm_only \
-  --use_badm true \
-  --use_aadm false
-
-# AADM only
-python 3_train_ablation.py \
-  --data_dir ./data/combined \
-  --experiment_name ablation_aadm_only \
-  --use_badm false \
-  --use_aadm true
-
-# No reasoning (1 iteration)
-python 3_train_ablation.py \
-  --data_dir ./data/combined \
-  --experiment_name ablation_no_reasoning \
-  --reasoning_iterations 1
-```
-
-## Output Structure
-
+### Output Structure
 ```
 outputs/<experiment_name>/
-├── best.pth           # Model checkpoint
-├── config.yaml        # Training config
-└── metrics.json       # Training history
+├── best.pth       (model + optimizer state dict)
+├── config.yaml    (training config snapshot)
+└── metrics.json   (history + test results)
 ```
 
-## Key Implementation Details
-
-### Evidence Fusion
-When both BADM and AADM are active:
-```python
-evidence_list = [badm_evidence, aadm_evidence]  # Each 64-dim
-reasoning_out = ERM(evidence_list)
-external_input = torch.cat(evidence_list, dim=1)  # 128-dim
-final = alpha * reasoning + (1-alpha) * external
-```
-
-### Attention Convergence
-- Measures stability: delta = |prob[iter=3] - prob[iter=2]|
-- Typical delta: 0.001-0.005
-- Lower = more stable
-
-## Common Issues
-
-### Out of Memory
-- Reduce batch_size: 128 → 64
-- Increase gradient_accumulation_steps
-- Reduce num_workers
-
-### Slow Training
-- Increase num_workers (up to CPU count - 1)
-- Enable persistent_workers=True
-- Use SSD for data directory
-
-### Import Errors
-- PyTorch 2.1+: Use `torch.cuda.amp` not `torch.amp`
-- Ensure timm>=0.9.0 installed
-
-## Dataset Information
-
-### Combined Dataset
-- **Total**: 227,504 frames
-- **Train**: 192,048 (98,738 real + 93,310 fake)
-- **Val**: 23,008 (10,998 real + 12,010 fake)
-- **Test**: 12,448 (6,210 real + 6,238 fake)
-- **Sources**: Celeb-DF v2 + FaceForensics++ C23
-- **Format**: PNG, 224x224 or original resolution
-
-### Data Splits
-- Train: 70%
-- Val: 15%
-- Test: 15%
-- Seed: 42 (reproducible)
-
-## Reproducibility
-
-```python
-def set_seed(seed=42):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-```
-
-Note: `benchmark=False` reduces performance ~10% but ensures determinism.
-
-## Adding New Baselines
-
-1. Create file in `src/baselines/`
-2. Implement `forward(x, freq_cached, sobel_cached) -> Dict`
-3. Return `{"logit": ..., "prob": ...}`
-4. Add to `src/baselines/__init__.py`
+## Code Style
+- No comments in code
+- Minimal, functional implementations
+- All modules return dictionaries for flexible monitoring
 
 ## File Naming Convention
-
-- `0_*.py`: Data download/setup
+- `0_*.sh`: Data download/setup
 - `2_*.py`: Training scripts
 - `3_*.py`: Ablation experiments
 - `4_*.py`: Analysis/comparison
 - `5_*.py`: Visualization
 
-Numbers indicate typical execution order.
+## Baselines (`src/baselines/`)
+ViT-Small, ResNet50, Xception, EfficientNet-B0. All pretrained, single logit output. Same forward interface: `forward(x, freq_cached, sobel_cached) → {logit, prob}`.
+
+## Analysis Utilities (`src/analysis/`)
+- `stats.py`: Bootstrap AUC confidence intervals (2000 iterations), DeLong test for AUC comparison
+- `aggregate.py`: Multi-seed result aggregation (mean/std/min/max)
+- `plots.py`: Training curves, ROC curves, ablation bar charts

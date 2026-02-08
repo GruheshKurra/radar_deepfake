@@ -33,36 +33,60 @@ def compute_frequency_spectrum(image: torch.Tensor, target_size: int = 112) -> t
     center_y, center_x = H // 2, W // 2
     y, x = torch.meshgrid(torch.arange(H, device=gray.device),
                          torch.arange(W, device=gray.device), indexing='ij')
-    dist = torch.sqrt((x - center_x)**2 + (y - center_y)**2)
-    cutoff = min(H, W) / 8
-    high_pass = torch.sigmoid((dist - cutoff) / 10)
+    dist = torch.sqrt(((x - center_x).float())**2 + ((y - center_y).float())**2)
 
-    magnitude = magnitude * high_pass.unsqueeze(0)
+    cutoffs = [min(H, W) / 16, min(H, W) / 8, min(H, W) / 4]
+    bands = []
+    for cutoff in cutoffs:
+        high_pass = torch.sigmoid((dist - cutoff) / 10)
+        band = magnitude * high_pass.unsqueeze(0)
+        band = torch.log1p(band)
+        min_vals = band.amin(dim=(1, 2), keepdim=True)
+        max_vals = band.amax(dim=(1, 2), keepdim=True)
+        denom = (max_vals - min_vals).clamp_min(1e-8)
+        band = (band - min_vals) / denom
+        bands.append(band)
 
-    freq_magnitude = torch.log1p(magnitude)
-    min_vals = freq_magnitude.amin(dim=(1, 2), keepdim=True)
-    max_vals = freq_magnitude.amax(dim=(1, 2), keepdim=True)
-    denom = (max_vals - min_vals).clamp_min(1e-8)
-    freq_magnitude = (freq_magnitude - min_vals) / denom
+    return torch.stack(bands, dim=1)
 
-    return freq_magnitude
+
+class ConvBlock(nn.Module):
+    def __init__(self, in_ch, out_ch, kernel_size=3, stride=1, padding=1):
+        super().__init__()
+        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size, stride=stride, padding=padding)
+        self.bn = nn.BatchNorm2d(out_ch)
+
+    def forward(self, x):
+        return F.relu(self.bn(self.conv(x)), inplace=True)
+
+
+class ResidualBlock(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1)
+        self.bn2 = nn.BatchNorm2d(channels)
+
+    def forward(self, x):
+        residual = x
+        out = F.relu(self.bn1(self.conv1(x)), inplace=True)
+        out = self.bn2(self.conv2(out))
+        return F.relu(out + residual, inplace=True)
 
 
 class FrequencyArtifactDetector(nn.Module):
-    def __init__(self, embed_dim: int = 384, evidence_dim: int = 64, fft_size: int = 112):
+    def __init__(self, embed_dim: int = 384, evidence_dim: int = 128, fft_size: int = 112):
         super().__init__()
         self.fft_size = fft_size
 
         self.freq_encoder = nn.Sequential(
-            nn.Conv2d(1, 32, 7, stride=4, padding=3),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 64, 5, stride=2, padding=2),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 128, 3, stride=2, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
+            ConvBlock(3, 48, 7, stride=2, padding=3),
+            ConvBlock(48, 96, 3, stride=2, padding=1),
+            ResidualBlock(96),
+            ConvBlock(96, 192, 3, stride=2, padding=1),
+            ResidualBlock(192),
+            ConvBlock(192, 256, 3, stride=2, padding=1),
             nn.AdaptiveAvgPool2d(1),
         )
 
@@ -73,7 +97,7 @@ class FrequencyArtifactDetector(nn.Module):
         )
 
         self.fusion = nn.Sequential(
-            nn.Linear(128 + embed_dim // 2, evidence_dim * 2),
+            nn.Linear(256 + embed_dim // 2, evidence_dim * 2),
             nn.ReLU(inplace=True),
             nn.Dropout(0.1),
             nn.Linear(evidence_dim * 2, evidence_dim),
@@ -88,7 +112,13 @@ class FrequencyArtifactDetector(nn.Module):
         if freq_cached is None:
             freq_cached = compute_frequency_spectrum(raw_image, target_size=self.fft_size)
 
-        magnitude = freq_cached.unsqueeze(1) if freq_cached.dim() == 3 else freq_cached
+        magnitude = freq_cached
+        if magnitude.dim() == 3:
+            magnitude = magnitude.unsqueeze(1)
+
+        if magnitude.shape[1] == 1:
+            magnitude = magnitude.expand(-1, 3, -1, -1)
+
         if magnitude.shape[-1] != self.fft_size:
             magnitude = F.interpolate(magnitude, size=(self.fft_size, self.fft_size),
                                     mode="bilinear", align_corners=False)

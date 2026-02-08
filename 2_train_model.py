@@ -53,14 +53,25 @@ def evaluate(model, loader, device):
 
 
 def train_model(model, train_loader, val_loader, config, device, output_dir):
-    optimizer = AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
+    freeze_epochs = config.get("freeze_backbone_epochs", 3)
+
+    if freeze_epochs > 0 and hasattr(model, 'freeze_backbone'):
+        model.freeze_backbone()
+        print(f"Backbone frozen for first {freeze_epochs} epochs")
+
+    backbone_lr = config["learning_rate"] * 0.1
+    param_groups = [
+        {"params": model.get_head_params(), "lr": config["learning_rate"]},
+        {"params": model.get_backbone_params(), "lr": backbone_lr},
+    ]
+
+    optimizer = AdamW(param_groups, lr=config["learning_rate"], weight_decay=config["weight_decay"])
 
     total_steps = len(train_loader) * config["num_epochs"] // config["gradient_accumulation_steps"]
-    warmup_steps = int(total_steps * config["warmup_ratio"])
 
     scheduler = OneCycleLR(
         optimizer,
-        max_lr=config["learning_rate"],
+        max_lr=[config["learning_rate"], backbone_lr],
         total_steps=total_steps,
         pct_start=config["warmup_ratio"],
         anneal_strategy='cos'
@@ -86,6 +97,10 @@ def train_model(model, train_loader, val_loader, config, device, output_dir):
     print("="*70)
 
     for epoch in range(config["num_epochs"]):
+        if epoch == freeze_epochs and freeze_epochs > 0 and hasattr(model, 'unfreeze_backbone'):
+            model.unfreeze_backbone()
+            print(f"Backbone unfrozen at epoch {epoch + 1}")
+
         epoch_start = time.time()
         print(f"\nEpoch {epoch+1}/{config['num_epochs']}")
         print("-" * 70)
@@ -125,7 +140,7 @@ def train_model(model, train_loader, val_loader, config, device, output_dir):
                 "config": config
             }
             torch.save(checkpoint, output_dir / "best.pth")
-            print(f"  ✓ New best model saved (AUC: {best_auc:.4f})")
+            print(f"  New best model saved (AUC: {best_auc:.4f})")
         else:
             patience_counter += 1
             print(f"  Patience: {patience_counter}/{config['early_stopping_patience']}")
@@ -138,14 +153,15 @@ def train_model(model, train_loader, val_loader, config, device, output_dir):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train RADAR model on WildDeepfake")
+    parser = argparse.ArgumentParser(description="Train RADAR model")
     parser.add_argument("--data_dir", type=str, default="./data", help="Data directory")
     parser.add_argument("--output_dir", type=str, default="./outputs", help="Output directory")
-    parser.add_argument("--experiment_name", type=str, default="radar_wilddeepfake", help="Experiment name")
+    parser.add_argument("--experiment_name", type=str, default="radar_combined", help="Experiment name")
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size")
     parser.add_argument("--num_epochs", type=int, default=30, help="Number of epochs")
     parser.add_argument("--learning_rate", type=float, default=0.0005, help="Learning rate")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--freeze_backbone_epochs", type=int, default=3, help="Epochs to freeze ViT backbone")
     args = parser.parse_args()
 
     if torch.cuda.is_available():
@@ -164,11 +180,11 @@ def main():
         "experiment_name": args.experiment_name,
         "seed": args.seed,
         "data_dir": args.data_dir,
-        "source_domain": "default",  # Only used for single-domain structure, not pre-split
+        "source_domain": "default",
         "img_size": 224,
         "patch_size": 16,
         "embed_dim": 384,
-        "evidence_dim": 64,
+        "evidence_dim": 128,
         "reasoning_iterations": 3,
         "reasoning_heads": 4,
         "fft_size": 112,
@@ -185,10 +201,11 @@ def main():
         "val_ratio": 0.1,
         "lambda_main": 1.0,
         "lambda_branch": 0.3,
-        "lambda_orthogonal": 0.1,
+        "lambda_orthogonal": 0.01,
         "lambda_deep_supervision": 0.05,
-        "label_smoothing": 0.1,
+        "label_smoothing": 0.05,
         "orthogonality_margin": 0.1,
+        "freeze_backbone_epochs": args.freeze_backbone_epochs,
     }
 
     print("\n" + "="*70)
@@ -198,6 +215,8 @@ def main():
     print(f"Seed: {config['seed']}")
     print(f"Batch size: {config['batch_size']}")
     print(f"Learning rate: {config['learning_rate']}")
+    print(f"Evidence dim: {config['evidence_dim']}")
+    print(f"Freeze backbone epochs: {config['freeze_backbone_epochs']}")
     print("="*70)
 
     set_seed(config["seed"])
@@ -289,9 +308,15 @@ def main():
         reasoning_iterations=config["reasoning_iterations"],
         reasoning_heads=config["reasoning_heads"],
         fft_size=config["fft_size"],
-        dropout=config["dropout"]
+        dropout=config["dropout"],
+        freeze_backbone_epochs=config["freeze_backbone_epochs"]
     )
     model = RADAR(model_config).to(device)
+
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"\nTotal parameters: {total_params:,}")
+    print(f"Trainable parameters: {trainable_params:,}")
 
     history, best_auc = train_model(model, train_loader, val_loader, config, device, output_dir)
 
@@ -323,13 +348,11 @@ def main():
         json.dump(results, f, indent=2)
 
     print("\n" + "="*70)
-    print("✓ TRAINING COMPLETE!")
+    print("TRAINING COMPLETE")
     print("="*70)
     print(f"Best Val AUC: {best_auc:.4f}")
     print(f"Test AUC: {test_metrics['auc']:.4f}")
     print(f"Results saved to: {output_dir}")
-    print("\nNext step:")
-    print(f"  python 3_export_results.py --results_dir {output_dir}")
     print("="*70 + "\n")
 
 

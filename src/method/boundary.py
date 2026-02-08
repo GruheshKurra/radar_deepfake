@@ -15,20 +15,55 @@ def _init_weights(m):
             nn.init.constant_(m.bias, 0)
 
 
+class ConvBlock(nn.Module):
+    def __init__(self, in_ch, out_ch, kernel_size=3, stride=1, padding=1):
+        super().__init__()
+        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size, stride=stride, padding=padding)
+        self.bn = nn.BatchNorm2d(out_ch)
+
+    def forward(self, x):
+        return F.relu(self.bn(self.conv(x)), inplace=True)
+
+
+class ResidualBlock(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1)
+        self.bn2 = nn.BatchNorm2d(channels)
+
+    def forward(self, x):
+        residual = x
+        out = F.relu(self.bn1(self.conv1(x)), inplace=True)
+        out = self.bn2(self.conv2(out))
+        return F.relu(out + residual, inplace=True)
+
+
+class SpatialAttention(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.conv = nn.Conv2d(2, 1, kernel_size=7, padding=3)
+
+    def forward(self, x):
+        avg_out = x.mean(dim=1, keepdim=True)
+        max_out = x.max(dim=1, keepdim=True)[0]
+        attn = torch.sigmoid(self.conv(torch.cat([avg_out, max_out], dim=1)))
+        return x * attn
+
+
 class BoundaryArtifactDetector(nn.Module):
-    def __init__(self, embed_dim: int = 384, evidence_dim: int = 64):
+    def __init__(self, embed_dim: int = 384, evidence_dim: int = 128):
         super().__init__()
 
         self.edge_encoder = nn.Sequential(
-            nn.Conv2d(1, 32, 7, stride=4, padding=3),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 64, 5, stride=2, padding=2),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 128, 3, stride=2, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
+            ConvBlock(1, 32, 7, stride=2, padding=3),
+            ConvBlock(32, 64, 3, stride=2, padding=1),
+            ResidualBlock(64),
+            SpatialAttention(64),
+            ConvBlock(64, 128, 3, stride=2, padding=1),
+            ResidualBlock(128),
+            ConvBlock(128, 256, 3, stride=2, padding=1),
             nn.AdaptiveAvgPool2d(1),
         )
 
@@ -41,7 +76,7 @@ class BoundaryArtifactDetector(nn.Module):
         )
 
         self.fusion = nn.Sequential(
-            nn.Linear(128 + embed_dim // 2, evidence_dim * 2),
+            nn.Linear(256 + embed_dim // 2, evidence_dim * 2),
             nn.ReLU(inplace=True),
             nn.Dropout(0.1),
             nn.Linear(evidence_dim * 2, evidence_dim),
@@ -66,11 +101,8 @@ class BoundaryArtifactDetector(nn.Module):
             grad_y = F.conv2d(gray, sobel_y, padding=1)
             sobel_cached = torch.sqrt(grad_x**2 + grad_y**2)
 
-            batch_size = sobel_cached.shape[0]
-            for i in range(batch_size):
-                max_val = sobel_cached[i].max()
-                if max_val > 1e-8:
-                    sobel_cached[i] = sobel_cached[i] / max_val
+            max_vals = sobel_cached.flatten(1).max(dim=1, keepdim=True)[0].unsqueeze(-1)
+            sobel_cached = sobel_cached / max_vals.clamp_min(1e-8)
 
         edges = sobel_cached.unsqueeze(1) if sobel_cached.dim() == 3 else sobel_cached
         edge_feat = self.edge_encoder(edges).flatten(1)

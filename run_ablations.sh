@@ -3,7 +3,7 @@
 echo "Starting RADAR Ablation Studies"
 echo "================================"
 
-DATA_DIR="./data/kaggle_140k_prepared"
+DATA_DIR="./data/combined"
 OUTPUT_DIR="./outputs"
 
 echo ""

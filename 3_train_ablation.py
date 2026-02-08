@@ -59,8 +59,6 @@ def main():
         optimal_workers = min(8, max(1, mp.cpu_count() - 1))
         print(f"GPU: {torch.cuda.get_device_name(0)}")
         print(f"VRAM: {gpu_mem_gb:.1f}GB")
-        print(f"Optimal batch size: {optimal_batch}")
-        print(f"Optimal workers: {optimal_workers}")
     else:
         optimal_batch = args.batch_size
         optimal_workers = 4
@@ -72,7 +70,7 @@ def main():
         "img_size": 224,
         "patch_size": 16,
         "embed_dim": 384,
-        "evidence_dim": 64,
+        "evidence_dim": 128,
         "reasoning_iterations": args.reasoning_iterations,
         "reasoning_heads": 4,
         "fft_size": 112,
@@ -87,12 +85,13 @@ def main():
         "num_workers": optimal_workers,
         "lambda_main": 1.0,
         "lambda_branch": 0.3 if (args.use_badm and args.use_aadm) else 0.0,
-        "lambda_orthogonal": 0.1 if (args.use_badm and args.use_aadm) else 0.0,
+        "lambda_orthogonal": 0.01 if (args.use_badm and args.use_aadm) else 0.0,
         "lambda_deep_supervision": 0.05,
-        "label_smoothing": 0.1,
+        "label_smoothing": 0.05,
         "orthogonality_margin": 0.1,
         "use_badm": args.use_badm,
         "use_aadm": args.use_aadm,
+        "freeze_backbone_epochs": 3,
     }
 
     print("\n" + "="*70)
@@ -102,6 +101,7 @@ def main():
     print(f"BADM: {'Enabled' if args.use_badm else 'Disabled'}")
     print(f"AADM: {'Enabled' if args.use_aadm else 'Disabled'}")
     print(f"Reasoning Iterations: {args.reasoning_iterations}")
+    print(f"Evidence Dim: {config['evidence_dim']}")
     print(f"Seed: {config['seed']}")
     print(f"Batch size: {config['batch_size']}")
     print("="*70)
@@ -115,8 +115,7 @@ def main():
     with open(output_dir / "config.yaml", 'w') as f:
         yaml.safe_dump(config, f, default_flow_style=False)
 
-    print("\n" + "="*70)
-    print("LOADING DATASET")
+    print("\nLOADING DATASET")
     print("="*70)
 
     data_dir = Path(config["data_dir"])
@@ -186,7 +185,8 @@ def main():
         reasoning_iterations=config["reasoning_iterations"],
         reasoning_heads=config["reasoning_heads"],
         fft_size=config["fft_size"],
-        dropout=config["dropout"]
+        dropout=config["dropout"],
+        freeze_backbone_epochs=config["freeze_backbone_epochs"]
     )
     model = RADAR(model_config).to(device)
 
@@ -229,7 +229,7 @@ def main():
         json.dump(results, f, indent=2)
 
     print("\n" + "="*70)
-    print("✓ ABLATION COMPLETE!")
+    print("ABLATION COMPLETE")
     print("="*70)
     print(f"Configuration: BADM={args.use_badm}, AADM={args.use_aadm}, Iters={args.reasoning_iterations}")
     print(f"Best Val AUC: {best_auc:.4f}")

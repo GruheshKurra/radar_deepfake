@@ -1,46 +1,37 @@
-# Optimized configuration for A40 GPU (48GB VRAM)
-# Hardware: A40 48GB VRAM, 48GB RAM, 9 vCPU
-
-# Model architecture
 img_size: 224
 patch_size: 16
 embed_dim: 384
-evidence_dim: 64
+evidence_dim: 128
 reasoning_iterations: 3
 reasoning_heads: 4
 fft_size: 112
 dropout: 0.1
 gating_init: 0.5
 
-# Training hyperparameters
-batch_size: 128              # A40 can handle large batches
+batch_size: 128
 num_epochs: 30
-learning_rate: 0.001         # Increase for larger batch size
-weight_decay: 0.0001
-gradient_accumulation_steps: 1  # No accumulation needed with large batch
+learning_rate: 0.001
+weight_decay: 0.05
+gradient_accumulation_steps: 1
 warmup_ratio: 0.1
+freeze_backbone_epochs: 3
 
-# Data loading (optimized for 9 vCPUs)
-num_workers: 8               # Leave 1 vCPU for main process
-prefetch_factor: 4           # Prefetch more batches
+num_workers: 8
+prefetch_factor: 4
 pin_memory: true
-persistent_workers: true     # Keep workers alive between epochs
+persistent_workers: true
 
-# Loss configuration
 lambda_main: 1.0
 lambda_branch: 0.3
-lambda_orthogonal: 0.1
+lambda_orthogonal: 0.01
 lambda_deep_supervision: 0.05
-label_smoothing: 0.1
+label_smoothing: 0.05
 orthogonality_margin: 0.1
 
-# Regularization
 early_stopping_patience: 10
 
-# Data splits
 train_ratio: 0.7
 val_ratio: 0.15
 seed: 42
 
-# Paths
 source_domain: "faceforensics"

@@ -51,7 +51,7 @@ class EvidenceCrossAttention(nn.Module):
 
 
 class EvidenceRefinementModule(nn.Module):
-    def __init__(self, evidence_dim: int = 64, num_heads: int = 4,
+    def __init__(self, evidence_dim: int = 128, num_heads: int = 4,
                  num_iterations: int = 3, dropout: float = 0.1,
                  max_evidence_sources: int = 2):
         super().__init__()
@@ -70,6 +70,15 @@ class EvidenceRefinementModule(nn.Module):
 
         self.attention = EvidenceCrossAttention(evidence_dim, num_heads, dropout)
         self.gru = nn.GRUCell(evidence_dim, evidence_dim)
+        self.layer_norm = nn.LayerNorm(evidence_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(evidence_dim, evidence_dim * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(evidence_dim * 2, evidence_dim),
+            nn.Dropout(dropout),
+        )
+        self.ffn_norm = nn.LayerNorm(evidence_dim)
         self.predictor = nn.Linear(evidence_dim, 1)
 
         self.apply(_init_weights)
@@ -96,7 +105,9 @@ class EvidenceRefinementModule(nn.Module):
             context, attn_weights = self.attention(h, evidence_stack)
             attention_history[:, t, :num_sources] = attn_weights
 
-            h = self.gru(context, h)
+            h = self.layer_norm(self.gru(context, h))
+            h = self.ffn_norm(h + self.ffn(h))
+
             logit = self.predictor(h)
 
             iteration_logits[:, t] = logit
