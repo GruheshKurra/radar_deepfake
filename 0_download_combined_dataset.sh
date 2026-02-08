@@ -15,50 +15,48 @@ echo "Download directory: $OUTPUT_DIR"
 echo ""
 
 if [[ "$OSTYPE" == "linux-gnu"* ]] || [ -f /etc/debian_version ]; then
-    MISSING_PACKAGES=""
-    [ ! -x "$(command -v wget)" ] && MISSING_PACKAGES="$MISSING_PACKAGES wget"
-    [ ! -x "$(command -v bsdtar)" ] && MISSING_PACKAGES="$MISSING_PACKAGES libarchive-tools"
-    [ ! -x "$(command -v pv)" ] && MISSING_PACKAGES="$MISSING_PACKAGES pv"
-
-    if [ -n "$MISSING_PACKAGES" ]; then
-        echo "Installing required packages:$MISSING_PACKAGES"
+    if ! command -v wget &> /dev/null; then
+        echo "Installing wget..."
         apt-get update -qq
-        apt-get install -y -qq $MISSING_PACKAGES
+        apt-get install -y -qq wget
     fi
 elif [[ "$OSTYPE" == "darwin"* ]]; then
-    [ ! -x "$(command -v wget)" ] && brew install wget
-    [ ! -x "$(command -v bsdtar)" ] && brew install libarchive
-    [ ! -x "$(command -v pv)" ] && brew install pv
+    if ! command -v wget &> /dev/null; then
+        echo "Installing wget..."
+        brew install wget
+    fi
 fi
 
 mkdir -p "$OUTPUT_DIR"
 cd "$OUTPUT_DIR"
 
-echo "Downloading dataset (public, no auth required)..."
-wget --progress=bar:force:noscroll \
-     --show-progress \
-     --no-check-certificate \
-     -O "$DOWNLOAD_FILE" \
-     "$DATASET_URL"
-
-if [ ! -f "$DOWNLOAD_FILE" ]; then
-    echo "ERROR: Download failed!"
-    exit 1
-fi
-
-echo ""
-echo "Download complete: $(du -h $DOWNLOAD_FILE | cut -f1)"
-echo ""
-
-echo "Extracting (bsdtar with progress)..."
-FILE_SIZE=$(stat -f%z "$DOWNLOAD_FILE" 2>/dev/null || stat -c%s "$DOWNLOAD_FILE" 2>/dev/null)
-pv -s $FILE_SIZE "$DOWNLOAD_FILE" | bsdtar -xf - -C .
-
-if [ -d "combined" ]; then
-    rm "$DOWNLOAD_FILE"
-    echo ""
-    echo "✓ Dataset ready at: $PWD/combined"
+if [ -f "$DOWNLOAD_FILE" ]; then
+    echo "✓ Dataset already downloaded: $DOWNLOAD_FILE ($(du -h $DOWNLOAD_FILE | cut -f1))"
+    echo "  Skipping download. Delete the file to re-download."
 else
-    echo "ERROR: Extraction failed or unexpected structure"
-    exit 1
+    echo "Downloading dataset (public, no auth required)..."
+    wget --progress=bar:force:noscroll \
+         --show-progress \
+         --no-check-certificate \
+         -O "$DOWNLOAD_FILE" \
+         "$DATASET_URL"
+
+    if [ ! -f "$DOWNLOAD_FILE" ]; then
+        echo "ERROR: Download failed!"
+        exit 1
+    fi
+
+    echo ""
+    echo "Download complete: $(du -h $DOWNLOAD_FILE | cut -f1)"
 fi
+echo ""
+echo "✓ Dataset ready: $PWD/$DOWNLOAD_FILE"
+echo ""
+echo "Choose your mode:"
+echo ""
+echo "1. INSTANT MODE (Recommended): Train directly from zip"
+echo "   python 2_train_model.py --data_dir $PWD/$DOWNLOAD_FILE"
+echo ""
+echo "2. FAST EXTRACT: Parallel extraction (5-10 minutes on 96 cores)"
+echo "   python 1_fast_extract.py --zip_path $PWD/$DOWNLOAD_FILE --num_workers 96"
+echo "   python 2_train_model.py --data_dir $PWD/combined"

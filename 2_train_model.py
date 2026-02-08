@@ -24,6 +24,8 @@ os.environ['TIMM_CACHE_DIR'] = str(Path(__file__).parent / 'data' / 'torch_cache
 from method import RADAR, RADARConfig, RADARLoss, LossConfig
 from data.dataset import DeepfakeDataset, get_train_transforms, get_val_transforms
 from data.splits import load_domain_data, create_stratified_split, load_presplit_data, is_presplit_dataset
+from data.zip_dataset import ZipDeepfakeDataset
+from data.zip_loader import get_zip_splits
 from experiments.train import train_epoch as _train_epoch, evaluate as _evaluate
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
@@ -233,48 +235,80 @@ def main():
     print("LOADING DATASET")
     print("="*70)
 
-    data_dir = Path(config["data_dir"])
+    data_path = Path(config["data_dir"])
+    is_zip = data_path.suffix.lower() == '.zip' and data_path.is_file()
 
-    if is_presplit_dataset(data_dir):
-        print(f"Detected pre-split dataset structure")
-        train_images, train_labels = load_presplit_data(data_dir, "train")
-        val_images, val_labels = load_presplit_data(data_dir, "val")
+    if is_zip:
+        print(f"⚡ Detected ZIP file: {data_path.name}")
+        print(f"Loading directly from ZIP (no extraction needed)")
 
-        if (data_dir / "test").exists():
-            test_images, test_labels = load_presplit_data(data_dir, "test")
-        else:
-            test_images, test_labels = val_images, val_labels
-    else:
-        print(f"Using single-domain structure with stratified split")
-        images, labels = load_domain_data(data_dir, config["source_domain"])
-        train_images, train_labels, val_images, val_labels, test_images, test_labels = create_stratified_split(
-            images, labels, config["train_ratio"], config["val_ratio"], config["seed"]
+        splits = get_zip_splits(data_path)
+        train_images, train_labels = splits['train']
+        val_images, val_labels = splits['val']
+        test_images, test_labels = splits['test']
+
+        print(f"Train samples: {len(train_images):,}")
+        print(f"Val samples: {len(val_images):,}")
+        print(f"Test samples: {len(test_images):,}")
+
+        train_dataset = ZipDeepfakeDataset(
+            data_path, train_images, train_labels,
+            get_train_transforms(config["img_size"])
         )
 
-    print(f"Train samples: {len(train_images):,}")
-    print(f"Val samples: {len(val_images):,}")
-    print(f"Test samples: {len(test_images):,}")
+        val_dataset = ZipDeepfakeDataset(
+            data_path, val_images, val_labels,
+            get_val_transforms(config["img_size"])
+        )
 
-    train_dataset = DeepfakeDataset(
-        train_images, train_labels,
-        get_train_transforms(config["img_size"]),
-        preprocess_dir=None,
-        validate_cache=False
-    )
+        test_dataset = ZipDeepfakeDataset(
+            data_path, test_images, test_labels,
+            get_val_transforms(config["img_size"])
+        )
 
-    val_dataset = DeepfakeDataset(
-        val_images, val_labels,
-        get_val_transforms(config["img_size"]),
-        preprocess_dir=None,
-        validate_cache=False
-    )
+    else:
+        data_dir = data_path
 
-    test_dataset = DeepfakeDataset(
-        test_images, test_labels,
-        get_val_transforms(config["img_size"]),
-        preprocess_dir=None,
-        validate_cache=False
-    )
+        if is_presplit_dataset(data_dir):
+            print(f"Detected pre-split dataset structure")
+            train_images, train_labels = load_presplit_data(data_dir, "train")
+            val_images, val_labels = load_presplit_data(data_dir, "val")
+
+            if (data_dir / "test").exists():
+                test_images, test_labels = load_presplit_data(data_dir, "test")
+            else:
+                test_images, test_labels = val_images, val_labels
+        else:
+            print(f"Using single-domain structure with stratified split")
+            images, labels = load_domain_data(data_dir, config["source_domain"])
+            train_images, train_labels, val_images, val_labels, test_images, test_labels = create_stratified_split(
+                images, labels, config["train_ratio"], config["val_ratio"], config["seed"]
+            )
+
+        print(f"Train samples: {len(train_images):,}")
+        print(f"Val samples: {len(val_images):,}")
+        print(f"Test samples: {len(test_images):,}")
+
+        train_dataset = DeepfakeDataset(
+            train_images, train_labels,
+            get_train_transforms(config["img_size"]),
+            preprocess_dir=None,
+            validate_cache=False
+        )
+
+        val_dataset = DeepfakeDataset(
+            val_images, val_labels,
+            get_val_transforms(config["img_size"]),
+            preprocess_dir=None,
+            validate_cache=False
+        )
+
+        test_dataset = DeepfakeDataset(
+            test_images, test_labels,
+            get_val_transforms(config["img_size"]),
+            preprocess_dir=None,
+            validate_cache=False
+        )
 
     train_loader = DataLoader(
         train_dataset, batch_size=config["batch_size"],
