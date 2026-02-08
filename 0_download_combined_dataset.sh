@@ -14,15 +14,15 @@ DATASET_URL="https://www.kaggle.com/api/v1/datasets/download/gruheshkurra/radar-
 echo "Download directory: $OUTPUT_DIR"
 echo ""
 
-if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+if [[ "$OSTYPE" == "linux-gnu"* ]] || [ -f /etc/debian_version ]; then
     if ! command -v 7z &> /dev/null; then
         echo "Installing 7zip for fast extraction..."
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq p7zip-full
+        apt-get update -qq
+        apt-get install -y -qq p7zip-full
     fi
     if ! command -v wget &> /dev/null; then
         echo "Installing wget..."
-        sudo apt-get install -y -qq wget
+        apt-get install -y -qq wget
     fi
 elif [[ "$OSTYPE" == "darwin"* ]]; then
     if ! command -v 7z &> /dev/null; then
