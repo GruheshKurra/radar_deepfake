@@ -24,8 +24,12 @@ os.environ['TIMM_CACHE_DIR'] = str(Path(__file__).parent / 'data' / 'torch_cache
 from method import RADAR, RADARConfig, RADARLoss, LossConfig
 from data.dataset import DeepfakeDataset, get_train_transforms, get_val_transforms
 from data.splits import load_domain_data, create_stratified_split, load_presplit_data, is_presplit_dataset
-from data.zip_dataset import ZipDeepfakeDataset
-from data.zip_loader import get_zip_splits
+try:
+    from data.zip_dataset import ZipDeepfakeDataset
+    from data.zip_loader import get_zip_splits
+    HAS_ZIP_SUPPORT = True
+except ImportError:
+    HAS_ZIP_SUPPORT = False
 from experiments.train import train_epoch as _train_epoch, evaluate as _evaluate
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
@@ -238,7 +242,13 @@ def main():
     data_path = Path(config["data_dir"])
     is_zip = data_path.suffix.lower() == '.zip' and data_path.is_file()
 
-    if is_zip:
+    if is_zip and not HAS_ZIP_SUPPORT:
+        print(f"ERROR: ZIP file detected but zip_dataset.py not found!")
+        print(f"Please extract the dataset first:")
+        print(f"  python 1_fast_extract.py --zip_path {data_path}")
+        sys.exit(1)
+
+    if is_zip and HAS_ZIP_SUPPORT:
         print(f"⚡ Detected ZIP file: {data_path.name}")
         print(f"Loading directly from ZIP (no extraction needed)")
 
