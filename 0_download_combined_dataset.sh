@@ -1,9 +1,5 @@
 #!/bin/bash
 
-# Download RADAR Combined Dataset from Kaggle
-# Dataset: gruheshkurra/radar-deepfake-frames
-# 227k frames from Celeb-DF v2 + FaceForensics++ C23
-
 set -e
 
 echo "======================================"
@@ -11,68 +7,60 @@ echo "RADAR Combined Dataset Downloader"
 echo "======================================"
 echo ""
 
-# Check if Kaggle credentials are set
-if [ -z "$KAGGLE_USERNAME" ] || [ -z "$KAGGLE_KEY" ]; then
-    echo "ERROR: Kaggle credentials not set!"
-    echo ""
-    echo "Please set your Kaggle credentials:"
-    echo "  export KAGGLE_USERNAME=<your_username>"
-    echo "  export KAGGLE_KEY=<your_api_key>"
-    echo ""
-    echo "Get your API key from: https://www.kaggle.com/settings"
-    exit 1
-fi
-
 OUTPUT_DIR="${1:-./data}"
 DOWNLOAD_FILE="radar-deepfake-frames.zip"
+DATASET_URL="https://www.kaggle.com/api/v1/datasets/download/gruheshkurra/radar-deepfake-frames"
 
 echo "Download directory: $OUTPUT_DIR"
-echo "Kaggle username: $KAGGLE_USERNAME"
 echo ""
 
-# Create output directory
+if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    if ! command -v 7z &> /dev/null; then
+        echo "Installing 7zip for fast extraction..."
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq p7zip-full
+    fi
+    if ! command -v wget &> /dev/null; then
+        echo "Installing wget..."
+        sudo apt-get install -y -qq wget
+    fi
+elif [[ "$OSTYPE" == "darwin"* ]]; then
+    if ! command -v 7z &> /dev/null; then
+        echo "Installing 7zip via Homebrew..."
+        brew install p7zip
+    fi
+    if ! command -v wget &> /dev/null; then
+        echo "Installing wget via Homebrew..."
+        brew install wget
+    fi
+fi
+
 mkdir -p "$OUTPUT_DIR"
 cd "$OUTPUT_DIR"
 
-# Download dataset
-echo "Downloading dataset..."
-curl -L -u "$KAGGLE_USERNAME:$KAGGLE_KEY" \
-  -o "$DOWNLOAD_FILE" \
-  https://www.kaggle.com/api/v1/datasets/download/gruheshkurra/radar-deepfake-frames
+echo "Downloading dataset (public, no auth required)..."
+wget --progress=bar:force:noscroll \
+     --show-progress \
+     --no-check-certificate \
+     -O "$DOWNLOAD_FILE" \
+     "$DATASET_URL"
 
 if [ ! -f "$DOWNLOAD_FILE" ]; then
     echo "ERROR: Download failed!"
     exit 1
 fi
 
+echo ""
 echo "Download complete: $(du -h $DOWNLOAD_FILE | cut -f1)"
 echo ""
 
-# Extract dataset
-echo "Extracting dataset..."
-unzip -q "$DOWNLOAD_FILE"
+echo "Extracting with 7zip (fast multi-threaded)..."
+7z x "$DOWNLOAD_FILE" -o. -bsp1
 
 if [ -d "combined" ]; then
-    echo "✓ Dataset extracted successfully"
-    echo ""
-
-    # Show statistics
-    echo "Dataset Statistics:"
-    echo "-------------------"
-    for split in train val test; do
-        if [ -d "combined/$split/real" ] && [ -d "combined/$split/fake" ]; then
-            real_count=$(find "combined/$split/real" -type f | wc -l)
-            fake_count=$(find "combined/$split/fake" -type f | wc -l)
-            total=$((real_count + fake_count))
-            echo "$split: $real_count real, $fake_count fake (total: $total)"
-        fi
-    done
-
-    # Clean up
     rm "$DOWNLOAD_FILE"
     echo ""
-    echo "✓ Download complete!"
-    echo "Dataset location: $PWD/combined"
+    echo "✓ Dataset ready at: $PWD/combined"
 else
     echo "ERROR: Extraction failed or unexpected structure"
     exit 1

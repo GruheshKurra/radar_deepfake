@@ -154,7 +154,7 @@ def train_model(model, train_loader, val_loader, config, device, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(description="Train RADAR model")
-    parser.add_argument("--data_dir", type=str, default="./data", help="Data directory")
+    parser.add_argument("--data_dir", type=str, default="./data/combined", help="Data directory")
     parser.add_argument("--output_dir", type=str, default="./outputs", help="Output directory")
     parser.add_argument("--experiment_name", type=str, default="radar_combined", help="Experiment name")
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size")

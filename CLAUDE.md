@@ -31,8 +31,6 @@ python 5_visualize_attention.py --checkpoint ./outputs/radar_training/best.pth -
 
 ### Dataset Download
 ```bash
-export KAGGLE_USERNAME=your_username
-export KAGGLE_KEY=your_api_key
 ./0_download_combined_dataset.sh
 ```
 
