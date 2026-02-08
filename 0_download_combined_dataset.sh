@@ -15,24 +15,20 @@ echo "Download directory: $OUTPUT_DIR"
 echo ""
 
 if [[ "$OSTYPE" == "linux-gnu"* ]] || [ -f /etc/debian_version ]; then
-    if ! command -v 7z &> /dev/null; then
-        echo "Installing 7zip for fast extraction..."
+    MISSING_PACKAGES=""
+    [ ! -x "$(command -v wget)" ] && MISSING_PACKAGES="$MISSING_PACKAGES wget"
+    [ ! -x "$(command -v bsdtar)" ] && MISSING_PACKAGES="$MISSING_PACKAGES libarchive-tools"
+    [ ! -x "$(command -v pv)" ] && MISSING_PACKAGES="$MISSING_PACKAGES pv"
+
+    if [ -n "$MISSING_PACKAGES" ]; then
+        echo "Installing required packages:$MISSING_PACKAGES"
         apt-get update -qq
-        apt-get install -y -qq p7zip-full
-    fi
-    if ! command -v wget &> /dev/null; then
-        echo "Installing wget..."
-        apt-get install -y -qq wget
+        apt-get install -y -qq $MISSING_PACKAGES
     fi
 elif [[ "$OSTYPE" == "darwin"* ]]; then
-    if ! command -v 7z &> /dev/null; then
-        echo "Installing 7zip via Homebrew..."
-        brew install p7zip
-    fi
-    if ! command -v wget &> /dev/null; then
-        echo "Installing wget via Homebrew..."
-        brew install wget
-    fi
+    [ ! -x "$(command -v wget)" ] && brew install wget
+    [ ! -x "$(command -v bsdtar)" ] && brew install libarchive
+    [ ! -x "$(command -v pv)" ] && brew install pv
 fi
 
 mkdir -p "$OUTPUT_DIR"
@@ -54,8 +50,9 @@ echo ""
 echo "Download complete: $(du -h $DOWNLOAD_FILE | cut -f1)"
 echo ""
 
-echo "Extracting with 7zip (fast multi-threaded)..."
-7z x "$DOWNLOAD_FILE" -o. -bsp1
+echo "Extracting (bsdtar with progress)..."
+FILE_SIZE=$(stat -f%z "$DOWNLOAD_FILE" 2>/dev/null || stat -c%s "$DOWNLOAD_FILE" 2>/dev/null)
+pv -s $FILE_SIZE "$DOWNLOAD_FILE" | bsdtar -xf - -C .
 
 if [ -d "combined" ]; then
     rm "$DOWNLOAD_FILE"
