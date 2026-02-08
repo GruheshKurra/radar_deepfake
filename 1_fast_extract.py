@@ -42,7 +42,9 @@ def main():
             for count in pool.imap_unordered(extract_chunk, worker_args):
                 pbar.update(count)
 
-    print(f"\n✓ Extraction complete: {args.output_dir}/combined")
+    print(f"\n✓ Extraction complete!")
+    print(f"Dataset structure: {args.output_dir}/{{train,val,test}}/{{real,fake}}/")
+    print(f"\nTrain with: python 2_train_model.py --data_dir {args.output_dir}")
 
 
 if __name__ == '__main__':

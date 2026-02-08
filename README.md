@@ -48,15 +48,23 @@ Download RADAR Combined Dataset (227k frames, public):
 
 The script automatically:
 - Downloads the public dataset (no Kaggle authentication needed)
-- Installs 7zip for fast multi-threaded extraction
-- Shows progress bars during download and extraction
-- Creates `./data/combined` with train/val/test splits
+- No extraction by default (train from ZIP directly)
+- For fast extraction: `python 1_fast_extract.py --num_workers 96`
+- Creates `./data/{train,val,test}` structure when extracted
 
 ## Training
 
 ```bash
+# From extracted directory
 python 2_train_model.py \
-  --data_dir ./data/combined \
+  --data_dir ./data \
+  --experiment_name radar_training \
+  --num_epochs 30 \
+  --batch_size 128
+
+# Or directly from ZIP (no extraction)
+python 2_train_model.py \
+  --data_dir ./data/radar-deepfake-frames.zip \
   --experiment_name radar_training \
   --num_epochs 30 \
   --batch_size 128
@@ -75,7 +83,7 @@ python 4_compare_ablations.py
 ```bash
 python 5_visualize_attention.py \
   --checkpoint ./outputs/radar_training/best.pth \
-  --data_dir ./data/combined
+  --data_dir ./data
 ```
 
 ## Architecture

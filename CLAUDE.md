@@ -11,22 +11,23 @@ RADAR (Reasoning and Artifact Detection for Deepfake Recognition) is a deep lear
 ### Training
 ```bash
 conda activate ml
-python 2_train_model.py --data_dir ./data/combined --experiment_name radar_training --num_epochs 30 --batch_size 128
-python 2_train_model.py --data_dir ./data/combined --batch_size 64 --learning_rate 0.0005 --freeze_backbone_epochs 3
+python 2_train_model.py --data_dir ./data --experiment_name radar_training --num_epochs 30 --batch_size 128
+python 2_train_model.py --data_dir ./data --batch_size 64 --learning_rate 0.0005 --freeze_backbone_epochs 3
+python 2_train_model.py --data_dir ./data/radar-deepfake-frames.zip --batch_size 128
 ```
 
 ### Ablation Studies
 ```bash
-python 3_train_ablation.py --data_dir ./data/combined --experiment_name ablation_badm_only --use_badm true --use_aadm false
-python 3_train_ablation.py --data_dir ./data/combined --experiment_name ablation_aadm_only --use_badm false --use_aadm true
-python 3_train_ablation.py --data_dir ./data/combined --experiment_name ablation_no_reasoning --reasoning_iterations 1
+python 3_train_ablation.py --data_dir ./data --experiment_name ablation_badm_only --use_badm true --use_aadm false
+python 3_train_ablation.py --data_dir ./data --experiment_name ablation_aadm_only --use_badm false --use_aadm true
+python 3_train_ablation.py --data_dir ./data --experiment_name ablation_no_reasoning --reasoning_iterations 1
 ./run_ablations.sh
 ```
 
 ### Compare and Visualize
 ```bash
 python 4_compare_ablations.py --output_dir ./outputs
-python 5_visualize_attention.py --checkpoint ./outputs/radar_training/best.pth --data_dir ./data/combined
+python 5_visualize_attention.py --checkpoint ./outputs/radar_training/best.pth --data_dir ./data
 ```
 
 ### Dataset Download
