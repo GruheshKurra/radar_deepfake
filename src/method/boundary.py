@@ -88,6 +88,10 @@ class BoundaryArtifactDetector(nn.Module):
 
     def forward(self, image: torch.Tensor, patch_features: torch.Tensor,
                 sobel_cached: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
+
+        if sobel_cached is not None and sobel_cached.size(1) != 1:
+            sobel_cached = None
+
         if sobel_cached is None:
             if image.size(1) != 3:
                 raise ValueError(f"Expected image with 3 channels, got {image.size(1)} channels. Shape: {image.shape}")
@@ -108,11 +112,6 @@ class BoundaryArtifactDetector(nn.Module):
             sobel_cached = sobel_cached / max_vals.clamp_min(1e-8)
 
         edges = sobel_cached.unsqueeze(1) if sobel_cached.dim() == 3 else sobel_cached
-
-        if edges.size(1) != 1:
-            raise ValueError(f"Expected edges with 1 channel, got {edges.size(1)} channels. "
-                           f"sobel_cached shape: {sobel_cached.shape}, edges shape: {edges.shape}")
-
         edge_feat = self.edge_encoder(edges).flatten(1)
 
         patch_mean = patch_features.mean(dim=1)

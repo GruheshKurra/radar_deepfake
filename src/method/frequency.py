@@ -109,6 +109,10 @@ class FrequencyArtifactDetector(nn.Module):
 
     def forward(self, raw_image: torch.Tensor, cls_token: torch.Tensor,
                 freq_cached: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
+
+        if freq_cached is not None and (freq_cached.dim() not in [3, 4] or freq_cached.size(1) > 3):
+            freq_cached = None
+
         if freq_cached is None:
             freq_cached = compute_frequency_spectrum(raw_image, target_size=self.fft_size)
 
