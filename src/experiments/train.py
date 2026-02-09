@@ -40,6 +40,8 @@ def train_epoch(model: nn.Module, loader: DataLoader, optimizer, scheduler,
         if len(batch_data) == 3:
             images, labels, extras = batch_data
             sobel_cached = extras.get("sobel_cached").to(device, non_blocking=True) if "sobel_cached" in extras else None
+            if sobel_cached is not None and (sobel_cached.ndim != 4 or sobel_cached.size(1) != 1):
+                sobel_cached = None
         else:
             images, labels = batch_data
             sobel_cached = None
@@ -105,6 +107,8 @@ def evaluate(model: nn.Module, loader: DataLoader, device: str,
         if len(batch_data) == 3:
             images, labels, extras = batch_data
             sobel_cached = extras.get("sobel_cached").to(device) if "sobel_cached" in extras else None
+            if sobel_cached is not None and (sobel_cached.ndim != 4 or sobel_cached.size(1) != 1):
+                sobel_cached = None
         else:
             images, labels = batch_data
             sobel_cached = None

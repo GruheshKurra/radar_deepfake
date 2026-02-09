@@ -94,8 +94,8 @@ class BoundaryArtifactDetector(nn.Module):
                 sobel_cached = None
 
         if sobel_cached is None:
-            if image.size(1) != 3:
-                raise ValueError(f"Expected image with 3 channels, got {image.size(1)} channels. Shape: {image.shape}")
+            if image.ndim != 4 or image.size(1) != 3:
+                raise ValueError(f"Expected image with shape [B, 3, H, W], got {image.shape}")
 
             gray = 0.299 * image[:, 0] + 0.587 * image[:, 1] + 0.114 * image[:, 2]
             gray = gray.unsqueeze(1)
@@ -107,17 +107,20 @@ class BoundaryArtifactDetector(nn.Module):
 
             grad_x = F.conv2d(gray, sobel_x, padding=1)
             grad_y = F.conv2d(gray, sobel_y, padding=1)
-            sobel_cached = torch.sqrt(grad_x**2 + grad_y**2)
+            edges = torch.sqrt(grad_x**2 + grad_y**2)
 
-            max_vals = sobel_cached.flatten(1).max(dim=1, keepdim=True)[0].unsqueeze(-1)
-            sobel_cached = sobel_cached / max_vals.clamp_min(1e-8)
-
-        if sobel_cached.ndim == 3:
-            edges = sobel_cached.unsqueeze(1)
-        elif sobel_cached.ndim == 4 and sobel_cached.size(1) == 1:
-            edges = sobel_cached
+            max_vals = edges.flatten(1).max(dim=1, keepdim=True)[0].unsqueeze(-1)
+            edges = edges / max_vals.clamp_min(1e-8)
         else:
-            raise ValueError(f"Invalid sobel_cached shape: {sobel_cached.shape}. Expected [B, 1, H, W] or [B, H, W]")
+            if sobel_cached.ndim == 3:
+                edges = sobel_cached.unsqueeze(1)
+            elif sobel_cached.ndim == 4 and sobel_cached.size(1) == 1:
+                edges = sobel_cached
+            else:
+                edges = None
+
+        if edges is None or edges.ndim != 4 or edges.size(1) != 1:
+            raise ValueError(f"Failed to create valid edges tensor. Shape: {edges.shape if edges is not None else 'None'}")
 
         edge_feat = self.edge_encoder(edges).flatten(1)
 
