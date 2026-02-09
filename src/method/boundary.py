@@ -94,11 +94,16 @@ class BoundaryArtifactDetector(nn.Module):
                 sobel_cached = None
 
         if sobel_cached is None:
-            if image.ndim != 4 or image.size(1) != 3:
-                raise ValueError(f"Expected image with shape [B, 3, H, W], got {image.shape}")
+            if image.ndim != 4:
+                raise ValueError(f"Expected 4D image tensor, got shape {image.shape}")
+            if image.size(1) not in [1, 3]:
+                raise ValueError(f"Expected image with 1 or 3 channels, got {image.size(1)} channels. Full shape: {image.shape}")
 
-            gray = 0.299 * image[:, 0] + 0.587 * image[:, 1] + 0.114 * image[:, 2]
-            gray = gray.unsqueeze(1)
+            if image.size(1) == 3:
+                gray = 0.299 * image[:, 0] + 0.587 * image[:, 1] + 0.114 * image[:, 2]
+                gray = gray.unsqueeze(1)
+            else:
+                gray = image
 
             sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
                                   dtype=image.dtype, device=image.device).view(1, 1, 3, 3)
