@@ -56,6 +56,12 @@ class BoundaryArtifactDetector(nn.Module):
     def __init__(self, embed_dim: int = 384, evidence_dim: int = 128):
         super().__init__()
 
+        # Pre-register Sobel kernels as buffers (avoids re-creating every forward pass)
+        sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32).view(1, 1, 3, 3)
+        sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32).view(1, 1, 3, 3)
+        self.register_buffer('sobel_x', sobel_x)
+        self.register_buffer('sobel_y', sobel_y)
+
         self.edge_encoder = nn.Sequential(
             ConvBlock(1, 32, 7, stride=2, padding=3),
             ConvBlock(32, 64, 3, stride=2, padding=1),
@@ -105,13 +111,8 @@ class BoundaryArtifactDetector(nn.Module):
             else:
                 gray = image
 
-            sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
-                                  dtype=image.dtype, device=image.device).view(1, 1, 3, 3)
-            sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]],
-                                  dtype=image.dtype, device=image.device).view(1, 1, 3, 3)
-
-            grad_x = F.conv2d(gray, sobel_x, padding=1)
-            grad_y = F.conv2d(gray, sobel_y, padding=1)
+            grad_x = F.conv2d(gray, self.sobel_x, padding=1)
+            grad_y = F.conv2d(gray, self.sobel_y, padding=1)
             edges = torch.sqrt(grad_x**2 + grad_y**2)
 
             max_vals = edges.flatten(1).max(dim=1, keepdim=True)[0].unsqueeze(-1)

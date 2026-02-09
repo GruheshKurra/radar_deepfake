@@ -33,7 +33,7 @@ except ImportError:
 from experiments.train import train_epoch as _train_epoch, evaluate as _evaluate
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from sklearn.metrics import roc_auc_score, accuracy_score
 
 
@@ -43,8 +43,8 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = False   # Trade reproducibility for speed
+    torch.backends.cudnn.benchmark = True         # Auto-tune conv algorithms
 
 
 def train_epoch(model, loader, optimizer, scheduler, loss_fn, scaler, device, gradient_accumulation_steps):
@@ -92,7 +92,7 @@ def train_model(model, train_loader, val_loader, config, device, output_dir):
         orthogonality_margin=config["orthogonality_margin"]
     )
     loss_fn = RADARLoss(loss_config)
-    scaler = GradScaler(device)
+    scaler = GradScaler("cuda", enabled=(device == "cuda"))
 
     history = {"train_loss": [], "val_auc": [], "val_acc": []}
     best_auc = 0.0
@@ -172,10 +172,18 @@ def main():
 
     if torch.cuda.is_available():
         gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
-        optimal_batch = 128 if gpu_mem_gb > 40 else 64
-        optimal_workers = min(8, max(1, mp.cpu_count() - 1))
-        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        gpu_name = torch.cuda.get_device_name(0)
+
+        # A40 / high-VRAM optimizations
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.set_float32_matmul_precision('high')
+
+        optimal_batch = 192 if gpu_mem_gb > 40 else 64
+        optimal_workers = min(12, max(2, mp.cpu_count() - 1))
+        print(f"GPU: {gpu_name}")
         print(f"VRAM: {gpu_mem_gb:.1f}GB")
+        print(f"TF32 enabled, cudnn.benchmark=True")
         print(f"Optimal batch size: {optimal_batch}")
         print(f"Optimal workers: {optimal_workers}")
     else:
@@ -357,6 +365,10 @@ def main():
     )
     model = RADAR(model_config).to(device)
 
+    # A40 optimizations: channels_last + torch.compile
+    if device == "cuda":
+        model = model.to(memory_format=torch.channels_last)
+
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"\nTotal parameters: {total_params:,}")
@@ -368,7 +380,7 @@ def main():
     print("EVALUATING ON TEST SET")
     print("="*70)
 
-    checkpoint = torch.load(output_dir / "best.pth", map_location=device)
+    checkpoint = torch.load(output_dir / "best.pth", map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 

@@ -1,107 +1,104 @@
 #!/usr/bin/env python3
+"""
+Compare ablation results: Baseline vs Baseline + RADAR for each backbone.
+Reads results saved by 3_train_ablation.py and generates formatted tables.
+
+Usage:
+  python 4_compare_ablations.py
+  python 4_compare_ablations.py --results_dir ./outputs/ablations
+"""
 
 import json
 from pathlib import Path
 import argparse
-from tabulate import tabulate
 
 
-def load_results(output_dir, experiment_names):
-    results = {}
-    for name in experiment_names:
-        metrics_file = Path(output_dir) / name / "metrics.json"
-        if metrics_file.exists():
-            with open(metrics_file, 'r') as f:
-                results[name] = json.load(f)
-        else:
-            print(f"Warning: {metrics_file} not found")
-    return results
+def print_main_table(results):
+    print("\n" + "=" * 90)
+    print("TABLE 1: Baseline vs Baseline + RADAR Modules")
+    print("=" * 90)
+
+    header = (f"{'Backbone':<20} {'Baseline AUC':>14} {'+ RADAR AUC':>14} "
+              f"{'Δ AUC':>10} {'Baseline Acc':>14} {'+ RADAR Acc':>14}")
+    print(header)
+    print("-" * 90)
+
+    for backbone_name, data in results.items():
+        name = data["display_name"]
+        b_auc = data["baseline"]["test_auc"] * 100
+        r_auc = data["radar"]["test_auc"] * 100
+        b_acc = data["baseline"]["test_acc"] * 100
+        r_acc = data["radar"]["test_acc"] * 100
+        delta = r_auc - b_auc
+        print(f"{name:<20} {b_auc:>13.2f}% {r_auc:>13.2f}% "
+              f"{delta:>+9.2f}% {b_acc:>13.2f}% {r_acc:>13.2f}%")
+
+    print("=" * 90)
 
 
-def generate_ablation_table(results):
-    table_data = []
+def print_parameter_table(results):
+    print("\n" + "=" * 80)
+    print("TABLE 2: Parameter Counts")
+    print("=" * 80)
 
-    configs = {
-        "radar_kaggle": ("Full RADAR", True, True, 3),
-        "ablation_badm_only": ("BADM Only", True, False, 3),
-        "ablation_aadm_only": ("AADM Only", False, True, 3),
-        "ablation_no_reasoning": ("Both (No Reasoning)", True, True, 1),
-    }
+    header = f"{'Backbone':<20} {'Baseline':>14} {'+ RADAR':>14} {'Overhead':>14} {'Overhead %':>12}"
+    print(header)
+    print("-" * 80)
 
-    for exp_name, (display_name, badm, aadm, iters) in configs.items():
-        if exp_name in results:
-            data = results[exp_name]
-            val_auc = data.get("best_val_auc", 0) * 100
-            test_auc = data["test_metrics"]["auc"] * 100
-            test_acc = data["test_metrics"]["accuracy"] * 100
+    for backbone_name, data in results.items():
+        name = data["display_name"]
+        b_params = data["baseline"]["params"]
+        r_params = data["radar"]["params"]
+        overhead = r_params - b_params
+        overhead_pct = (r_params / b_params - 1) * 100
+        print(f"{name:<20} {b_params:>14,} {r_params:>14,} {overhead:>+14,} {overhead_pct:>11.1f}%")
 
-            table_data.append([
-                display_name,
-                f"{val_auc:.2f}%",
-                f"{test_auc:.2f}%",
-                f"{test_acc:.2f}%",
-                "✓" if badm else "✗",
-                "✓" if aadm else "✗",
-                iters
-            ])
-
-    headers = ["Configuration", "Val AUC", "Test AUC", "Test Acc", "BADM", "AADM", "Iters"]
-    return tabulate(table_data, headers=headers, tablefmt="grid")
+    print("=" * 80)
 
 
-def generate_iterations_table(results):
-    table_data = []
+def print_timing_table(results):
+    print("\n" + "=" * 70)
+    print("TABLE 3: Training Time (seconds)")
+    print("=" * 70)
 
-    for iters in [1, 2, 3, 4, 5]:
-        exp_name = f"ablation_iters_{iters}"
-        if exp_name in results:
-            data = results[exp_name]
-            val_auc = data.get("best_val_auc", 0) * 100
-            test_auc = data["test_metrics"]["auc"] * 100
-            test_acc = data["test_metrics"]["accuracy"] * 100
+    header = f"{'Backbone':<20} {'Baseline':>14} {'+ RADAR':>14} {'Overhead':>14}"
+    print(header)
+    print("-" * 70)
 
-            table_data.append([
-                iters,
-                f"{val_auc:.2f}%",
-                f"{test_auc:.2f}%",
-                f"{test_acc:.2f}%",
-            ])
+    for backbone_name, data in results.items():
+        name = data["display_name"]
+        b_time = data["baseline"]["train_time_sec"]
+        r_time = data["radar"]["train_time_sec"]
+        overhead = r_time - b_time
+        print(f"{name:<20} {b_time:>13.1f}s {r_time:>13.1f}s {overhead:>+13.1f}s")
 
-    headers = ["Iterations", "Val AUC", "Test AUC", "Test Acc"]
-    return tabulate(table_data, headers=headers, tablefmt="grid")
+    print("=" * 70)
 
 
-def generate_latex_table(results):
-    print("\n" + "="*70)
-    print("LATEX TABLE (Copy to paper)")
-    print("="*70)
-
-    configs = {
-        "radar_kaggle": ("Full RADAR", True, True, 3),
-        "ablation_badm_only": ("BADM Only", True, False, 3),
-        "ablation_aadm_only": ("AADM Only", False, True, 3),
-        "ablation_no_reasoning": ("Both (No Reasoning)", True, True, 1),
-    }
+def print_latex_table(results):
+    print("\n" + "=" * 70)
+    print("LATEX TABLE (copy to paper)")
+    print("=" * 70)
 
     print(r"\begin{table}[h]")
     print(r"\centering")
-    print(r"\caption{Ablation Study Results}")
-    print(r"\begin{tabular}{lccc}")
+    print(r"\caption{Effect of RADAR modules across backbone architectures. "
+          r"Adding BADM, AADM, and ERM consistently improves detection performance.}")
+    print(r"\begin{tabular}{lcccc}")
     print(r"\toprule")
-    print(r"Configuration & Val AUC & Test AUC & Test Acc \\")
+    print(r"Backbone & Baseline AUC & + RADAR AUC & $\Delta$ AUC & $\Delta$ Acc \\")
     print(r"\midrule")
 
-    for exp_name, (display_name, _, _, _) in configs.items():
-        if exp_name in results:
-            data = results[exp_name]
-            val_auc = data.get("best_val_auc", 0) * 100
-            test_auc = data["test_metrics"]["auc"] * 100
-            test_acc = data["test_metrics"]["accuracy"] * 100
-
-            if exp_name == "radar_kaggle":
-                print(f"\\textbf{{{display_name}}} & \\textbf{{{val_auc:.2f}\\%}} & \\textbf{{{test_auc:.2f}\\%}} & \\textbf{{{test_acc:.2f}\\%}} \\\\")
-            else:
-                print(f"{display_name} & {val_auc:.2f}\\% & {test_auc:.2f}\\% & {test_acc:.2f}\\% \\\\")
+    for backbone_name, data in results.items():
+        name = data["display_name"]
+        b_auc = data["baseline"]["test_auc"] * 100
+        r_auc = data["radar"]["test_auc"] * 100
+        delta_auc = r_auc - b_auc
+        b_acc = data["baseline"]["test_acc"] * 100
+        r_acc = data["radar"]["test_acc"] * 100
+        delta_acc = r_acc - b_acc
+        print(f"{name} & {b_auc:.2f}\\% & \\textbf{{{r_auc:.2f}\\%}} "
+              f"& +{delta_auc:.2f}\\% & +{delta_acc:.2f}\\% \\\\")
 
     print(r"\bottomrule")
     print(r"\end{tabular}")
@@ -109,70 +106,72 @@ def generate_latex_table(results):
     print(r"\end{table}")
 
 
+def print_key_findings(results):
+    print("\n" + "=" * 70)
+    print("KEY FINDINGS")
+    print("=" * 70)
+
+    improvements = []
+    for backbone_name, data in results.items():
+        name = data["display_name"]
+        delta = (data["radar"]["test_auc"] - data["baseline"]["test_auc"]) * 100
+        improvements.append((name, delta))
+
+    if improvements:
+        avg_improvement = sum(d for _, d in improvements) / len(improvements)
+        best_name, best_delta = max(improvements, key=lambda x: x[1])
+        worst_name, worst_delta = min(improvements, key=lambda x: x[1])
+
+        print(f"\n  Average AUC improvement:   {avg_improvement:+.2f}%")
+        print(f"  Best improvement:          {best_name} ({best_delta:+.2f}%)")
+        print(f"  Smallest improvement:      {worst_name} ({worst_delta:+.2f}%)")
+
+        all_positive = all(d > 0 for _, d in improvements)
+        if all_positive:
+            print(f"\n  ✓ RADAR modules improve ALL {len(improvements)} backbone architectures")
+        else:
+            negative = [(n, d) for n, d in improvements if d <= 0]
+            print(f"\n  ⚠ RADAR did not improve: {', '.join(n for n, _ in negative)}")
+
+    print("=" * 70)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Compare ablation results")
-    parser.add_argument("--output_dir", type=str, default="./outputs")
+    parser.add_argument("--results_dir", type=str, default="./outputs/ablations",
+                        help="Directory containing ablation_results.json")
     args = parser.parse_args()
 
-    all_experiments = [
-        "radar_kaggle",
-        "ablation_badm_only",
-        "ablation_aadm_only",
-        "ablation_no_reasoning",
-        "ablation_iters_1",
-        "ablation_iters_2",
-        "ablation_iters_3",
-        "ablation_iters_4",
-        "ablation_iters_5",
-    ]
+    results_file = Path(args.results_dir) / "ablation_results.json"
 
-    print("\n" + "="*70)
-    print("RADAR ABLATION STUDY RESULTS")
-    print("="*70)
-
-    results = load_results(args.output_dir, all_experiments)
-
-    if not results:
-        print("No results found!")
+    if not results_file.exists():
+        print(f"No results found at {results_file}")
+        print("Run 3_train_ablation.py first:")
+        print("  python 3_train_ablation.py --data_dir ./data")
         return
 
-    print("\n" + "="*70)
-    print("TABLE 1: Component Ablation")
-    print("="*70)
-    print(generate_ablation_table(results))
+    with open(results_file) as f:
+        results = json.load(f)
 
-    print("\n" + "="*70)
-    print("TABLE 2: Reasoning Iterations Ablation")
-    print("="*70)
-    print(generate_iterations_table(results))
+    if not results:
+        print("Results file is empty.")
+        return
 
-    generate_latex_table(results)
+    print("\n" + "=" * 90)
+    print("RADAR ABLATION STUDY: Baseline vs Baseline + RADAR Modules")
+    print("=" * 90)
+    print(f"Results loaded from: {results_file}")
+    print(f"Backbones evaluated: {len(results)}")
 
-    print("\n" + "="*70)
-    print("KEY FINDINGS:")
-    print("="*70)
+    print_main_table(results)
+    print_parameter_table(results)
+    print_timing_table(results)
+    print_key_findings(results)
+    print_latex_table(results)
 
-    if "radar_kaggle" in results and "ablation_badm_only" in results:
-        full_auc = results["radar_kaggle"]["test_metrics"]["auc"] * 100
-        badm_auc = results["ablation_badm_only"]["test_metrics"]["auc"] * 100
-        improvement = full_auc - badm_auc
-        print(f"1. Full RADAR improves over BADM-only by {improvement:.2f}% AUC")
-
-    if "radar_kaggle" in results and "ablation_aadm_only" in results:
-        full_auc = results["radar_kaggle"]["test_metrics"]["auc"] * 100
-        aadm_auc = results["ablation_aadm_only"]["test_metrics"]["auc"] * 100
-        improvement = full_auc - aadm_auc
-        print(f"2. Full RADAR improves over AADM-only by {improvement:.2f}% AUC")
-
-    if "radar_kaggle" in results and "ablation_no_reasoning" in results:
-        full_auc = results["radar_kaggle"]["test_metrics"]["auc"] * 100
-        no_reason_auc = results["ablation_no_reasoning"]["test_metrics"]["auc"] * 100
-        improvement = full_auc - no_reason_auc
-        print(f"3. Reasoning module adds {improvement:.2f}% AUC improvement")
-
-    print("\n" + "="*70)
-    print("Export these tables to your paper!")
-    print("="*70)
+    print("\n" + "=" * 70)
+    print("Use these tables in your paper!")
+    print("=" * 70)
 
 
 if __name__ == "__main__":

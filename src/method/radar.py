@@ -16,6 +16,7 @@ os.environ['TIMM_CACHE_DIR'] = str(Path(__file__).parent.parent.parent / 'data' 
 
 @dataclass
 class RADARConfig:
+    backbone: str = "vit_small_patch16_224"
     img_size: int = 224
     patch_size: int = 16
     embed_dim: int = 384
@@ -45,14 +46,16 @@ class RADAR(nn.Module):
         self.config = config
 
         self.encoder = timm.create_model(
-            "vit_small_patch16_224",
+            config.backbone,
             pretrained=True,
             num_classes=0,
         )
 
-        self.badm = BoundaryArtifactDetector(config.embed_dim, config.evidence_dim)
+        embed_dim = self.encoder.num_features
+
+        self.badm = BoundaryArtifactDetector(embed_dim, config.evidence_dim)
         self.aadm = FrequencyArtifactDetector(
-            config.embed_dim, config.evidence_dim, config.fft_size
+            embed_dim, config.evidence_dim, config.fft_size
         )
 
         self.reasoning = EvidenceRefinementModule(
@@ -105,15 +108,26 @@ class RADAR(nn.Module):
             params.extend(module.parameters())
         return params
 
+    def _extract_features(self, x: torch.Tensor):
+        features = self.encoder.forward_features(x)
+        if features.ndim == 3:
+            cls_token = features[:, 0]
+            patch_features = features[:, 1:]
+        elif features.ndim == 4:
+            cls_token = features.mean(dim=[2, 3])
+            B, C, H, W = features.shape
+            patch_features = features.flatten(2).transpose(1, 2)
+        else:
+            raise ValueError(f"Unexpected feature shape: {features.shape}")
+        return cls_token, patch_features
+
     def forward(self, x: torch.Tensor, freq_cached: Optional[torch.Tensor] = None,
                 sobel_cached: Optional[torch.Tensor] = None, use_badm: bool = True,
                 use_aadm: bool = True) -> Dict[str, torch.Tensor]:
         B = x.shape[0]
         device = x.device
 
-        vit_out = self.encoder.forward_features(x)
-        cls_token = vit_out[:, 0]
-        patch_features = vit_out[:, 1:]
+        cls_token, patch_features = self._extract_features(x)
 
         badm_out = self.badm(x, patch_features, sobel_cached) if use_badm else None
         aadm_out = self.aadm(x, cls_token, freq_cached) if use_aadm else None

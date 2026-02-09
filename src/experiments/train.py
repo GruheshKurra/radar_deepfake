@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from pathlib import Path
 import time
 import json
@@ -49,7 +49,7 @@ def train_epoch(model: nn.Module, loader: DataLoader, optimizer, scheduler,
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
-        with autocast(enabled=(device=="cuda")):
+        with autocast("cuda", enabled=(device=="cuda")):
             outputs = model(images, freq_cached=None, sobel_cached=sobel_cached,
                            use_badm=config.get("use_badm", True),
                            use_aadm=config.get("use_aadm", True))
@@ -115,7 +115,7 @@ def evaluate(model: nn.Module, loader: DataLoader, device: str,
 
         images = images.to(device)
 
-        with autocast(enabled=(device=="cuda")):
+        with autocast("cuda", enabled=(device=="cuda")):
             outputs = model(images, freq_cached=None, sobel_cached=sobel_cached,
                            use_badm=use_badm, use_aadm=use_aadm)
 
@@ -185,7 +185,7 @@ def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoad
     scheduler = OneCycleLR(optimizer, max_lr=[config["learning_rate"], backbone_lr],
                           total_steps=total_steps, pct_start=config["warmup_ratio"])
 
-    scaler = GradScaler(enabled=(device=="cuda"))
+    scaler = GradScaler("cuda", enabled=(device=="cuda"))
 
     best_auc = 0
     patience_counter = 0
