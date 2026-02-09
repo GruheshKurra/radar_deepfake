@@ -180,7 +180,7 @@ def main():
         torch.set_float32_matmul_precision('high')
 
         optimal_batch = 192 if gpu_mem_gb > 40 else 64
-        optimal_workers = min(8, max(2, mp.cpu_count() - 1))
+        optimal_workers = min(16, max(2, mp.cpu_count() - 1))
         print(f"GPU: {gpu_name}")
         print(f"VRAM: {gpu_mem_gb:.1f}GB")
         print(f"TF32 enabled, cudnn.benchmark=True")

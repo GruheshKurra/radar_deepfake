@@ -355,7 +355,7 @@ def main():
             batch_size = args.batch_size
             eval_batch_size = batch_size * 2
 
-        num_workers = min(8, max(2, mp.cpu_count() - 1))
+        num_workers = min(16, max(2, mp.cpu_count() - 1))
         print(f"  TF32 enabled, cudnn.benchmark=True")
         print(f"  Train batch: {batch_size}, Eval batch: {eval_batch_size}, Workers: {num_workers}")
     else:
