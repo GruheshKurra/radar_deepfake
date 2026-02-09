@@ -115,7 +115,7 @@ class BoundaryArtifactDetector(nn.Module):
             grad_y = F.conv2d(gray, self.sobel_y, padding=1)
             edges = torch.sqrt(grad_x**2 + grad_y**2)
 
-            max_vals = edges.flatten(1).max(dim=1, keepdim=True)[0].unsqueeze(-1)
+            max_vals = edges.amax(dim=(1, 2, 3), keepdim=True)  # (B, 1, 1, 1)
             edges = edges / max_vals.clamp_min(1e-8)
         else:
             if sobel_cached.ndim == 3:
