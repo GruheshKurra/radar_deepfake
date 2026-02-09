@@ -89,8 +89,9 @@ class BoundaryArtifactDetector(nn.Module):
     def forward(self, image: torch.Tensor, patch_features: torch.Tensor,
                 sobel_cached: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
 
-        if sobel_cached is not None and sobel_cached.size(1) != 1:
-            sobel_cached = None
+        if sobel_cached is not None:
+            if sobel_cached.ndim != 4 or sobel_cached.size(1) != 1:
+                sobel_cached = None
 
         if sobel_cached is None:
             if image.size(1) != 3:
@@ -111,7 +112,13 @@ class BoundaryArtifactDetector(nn.Module):
             max_vals = sobel_cached.flatten(1).max(dim=1, keepdim=True)[0].unsqueeze(-1)
             sobel_cached = sobel_cached / max_vals.clamp_min(1e-8)
 
-        edges = sobel_cached.unsqueeze(1) if sobel_cached.dim() == 3 else sobel_cached
+        if sobel_cached.ndim == 3:
+            edges = sobel_cached.unsqueeze(1)
+        elif sobel_cached.ndim == 4 and sobel_cached.size(1) == 1:
+            edges = sobel_cached
+        else:
+            raise ValueError(f"Invalid sobel_cached shape: {sobel_cached.shape}. Expected [B, 1, H, W] or [B, H, W]")
+
         edge_feat = self.edge_encoder(edges).flatten(1)
 
         patch_mean = patch_features.mean(dim=1)
