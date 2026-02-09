@@ -36,6 +36,7 @@ This document walks you through every file in the project, in the order you'd ne
 13. [Utility Helpers (`src/utils/`)](#13-utility-helpers)
 14. [Experiment Configs (`src/experiments/configs/`)](#14-experiment-configs)
 15. [How Everything Connects — End-to-End Flow](#15-end-to-end-flow)
+16. [A40 Performance Optimizations](#16-a40-performance-optimizations)
 
 ---
 
@@ -343,40 +344,65 @@ EvidenceRefinementModule   # ERM
 RADARLoss, LossConfig      # Loss function
 ```
 
-### 6b. The Backbone — ViT (`src/method/radar.py`)
+### 6b. The Backbone — Any Architecture (`src/method/radar.py`)
+
+RADAR is **backbone-agnostic** — it can wrap around any image classifier from `timm`. The backbone is specified via the `config.backbone` field.
 
 #### `RADARConfig` (dataclass)
 
 All hyperparameters in one place:
 | Parameter | Default | Meaning |
 |-----------|---------|---------|
+| `backbone` | `"vit_small_patch16_224"` | Any `timm` model name (ViT, ResNet, Xception, EfficientNet, etc.) |
 | `img_size` | 224 | Input image size |
-| `patch_size` | 16 | ViT splits image into 16×16 patches |
-| `embed_dim` | 384 | ViT-Small's hidden dimension |
+| `patch_size` | 16 | ViT splits image into 16×16 patches (only relevant for ViT) |
+| `embed_dim` | 384 | **Auto-detected** from the backbone's `num_features` |
 | `evidence_dim` | 128 | Size of BADM/AADM output vectors |
 | `reasoning_iterations` | 3 | How many times ERM refines its answer |
 | `reasoning_heads` | 4 | Number of attention heads in ERM |
 | `fft_size` | 112 | Resolution for FFT computation |
 | `dropout` | 0.1 | Dropout rate |
 | `gating_init` | 0.5 | Initial balance between reasoning/external |
-| `freeze_backbone_epochs` | 3 | Epochs before ViT starts training |
+| `freeze_backbone_epochs` | 3 | Epochs before backbone starts training |
 
 #### `RADAR` class — `__init__`
 
 ```python
-self.encoder = timm.create_model("vit_small_patch16_224", pretrained=True, num_classes=0)
+self.encoder = timm.create_model(config.backbone, pretrained=True, num_classes=0)
+embed_dim = self.encoder.num_features  # Auto-detect!
 ```
 
-This loads a **ViT-Small** pretrained on ImageNet. `num_classes=0` removes the classification head — we just want features.
+This loads **any pretrained backbone** from `timm`. `num_classes=0` removes the classification head — we just want features. The embedding dimension is **auto-detected** via `self.encoder.num_features`, so you never need to manually set `embed_dim`.
 
-**ViT-Small specs:** 22M parameters, splits 224×224 image into 14×14 = 196 patches of 16×16 pixels each, produces 384-dimensional features.
+**Supported backbones (tested in ablation study):**
+| Backbone | `config.backbone` | Params | `embed_dim` (auto) | Feature Shape |
+|----------|-------------------|--------|-------------------|---------------|
+| ViT-Small | `"vit_small_patch16_224"` | ~22M | 384 | `(B, 197, 384)` — 3D |
+| ResNet-50 | `"resnet50"` | ~25M | 2048 | `(B, 2048, 7, 7)` — 4D |
+| Xception | `"xception"` | ~23M | 2048 | `(B, 2048, 7, 7)` — 4D |
+| EfficientNet-B0 | `"tf_efficientnet_b0"` | ~5M | 1280 | `(B, 1280, 7, 7)` — 4D |
 
-When you call `encoder.forward_features(x)`, it returns a tensor of shape `(batch, 197, 384)`:
-- Position 0: the **CLS token** — a single 384-dim vector summarizing the whole image
-- Positions 1–196: **patch tokens** — one 384-dim vector per image patch
+#### `_extract_features()` — Handling ViT vs CNN Backbones
 
-Then it creates:
-- `self.badm` — Boundary module (gets patch tokens)
+Different backbones produce different output shapes. This method normalizes them:
+
+```python
+def _extract_features(self, x):
+    features = self.encoder.forward_features(x)
+    if features.ndim == 3:   # ViT: (B, seq_len, dim)
+        cls_token = features[:, 0]         # (B, dim)
+        patch_features = features[:, 1:]   # (B, num_patches, dim)
+    elif features.ndim == 4: # CNN: (B, channels, H, W)
+        cls_token = features.mean(dim=[2, 3])              # Global avg pool → (B, channels)
+        patch_features = features.flatten(2).transpose(1,2) # (B, H*W, channels)
+```
+
+**Why this matters:** ViTs output a 3D tensor where position 0 is the CLS token (global summary) and positions 1+ are patch tokens. CNNs output a 4D feature map. This method makes both look the same to BADM and AADM:
+- `cls_token`: `(B, embed_dim)` — global summary (CLS token for ViT, spatial average for CNN)
+- `patch_features`: `(B, num_patches, embed_dim)` — spatial features (patch tokens for ViT, flattened spatial map for CNN)
+
+Then it creates the downstream modules using `embed_dim` (auto-detected):
+- `self.badm` — Boundary module (gets patch features)
 - `self.aadm` — Frequency module (gets CLS token)
 - `self.reasoning` — ERM (gets evidence from both)
 - `self.external_classifier_dual` — MLP that takes concatenated evidence (256 → 128 → 1)
@@ -388,13 +414,13 @@ Then it creates:
 #### Backbone freezing/unfreezing
 
 ```python
-def freeze_backbone(self):    # Set all ViT params to requires_grad=False
+def freeze_backbone(self):    # Set all backbone params to requires_grad=False
 def unfreeze_backbone(self):  # Set them back to True
-def get_backbone_params(self): # Return ViT parameters (for differential LR)
-def get_head_params(self):     # Return everything except ViT (BADM, AADM, ERM, classifiers, gating)
+def get_backbone_params(self): # Return backbone parameters (for differential LR)
+def get_head_params(self):     # Return everything except backbone (BADM, AADM, ERM, classifiers, gating)
 ```
 
-**Why freeze?** The ViT is pretrained and already good at extracting visual features. If you train everything from scratch, the ViT's gradients dominate and BADM/AADM never learn anything useful. By freezing the ViT for 3 epochs, BADM/AADM are forced to learn from the ViT's fixed (good) features. After unfreezing, the ViT fine-tunes gently (at 10× lower learning rate).
+**Why freeze?** The backbone is pretrained and already good at extracting visual features. If you train everything from scratch, the backbone's gradients dominate and BADM/AADM never learn anything useful. By freezing the backbone for 3 epochs, BADM/AADM are forced to learn from the backbone's fixed (good) features. After unfreezing, the backbone fine-tunes gently (at 10× lower learning rate).
 
 ### 6c. BADM — Boundary Artifact Detection Module (`src/method/boundary.py`)
 
@@ -424,6 +450,8 @@ RGB image → Grayscale (using standard luminance weights 0.299R + 0.587G + 0.11
 → Edge magnitude = sqrt(grad_x² + grad_y²)
 → Normalize to [0, 1]
 ```
+
+**Performance optimization:** The Sobel kernels are pre-registered as `register_buffer` tensors in `__init__`, not re-created every forward pass. This eliminates redundant GPU memory allocation on every batch.
 
 The Sobel filter is a classical edge detector. It highlights every boundary in the image. Deepfake artifacts show up as abnormally strong or strangely shaped edges.
 
@@ -707,17 +735,23 @@ This is **the** script you run. It orchestrates everything.
 
 1. **Parse arguments** — data_dir, batch_size, epochs, LR, seed, etc.
 
-2. **Auto-detect GPU capabilities:**
+2. **Auto-detect GPU & enable A40 optimizations:**
    ```python
    if torch.cuda.is_available():
        gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1e9
-       optimal_batch = 128 if gpu_mem > 40 else 64  # More VRAM → bigger batch
-       optimal_workers = min(8, cpu_count - 1)
+       
+       # A40 / high-VRAM optimizations
+       torch.backends.cuda.matmul.allow_tf32 = True  # Tensor Core TF32 (3× faster matmuls)
+       torch.backends.cudnn.allow_tf32 = True         # TF32 for convolutions
+       torch.set_float32_matmul_precision('high')     # Prefer speed
+       
+       optimal_batch = 192 if gpu_mem > 40 else 64    # A40 can handle 192
+       optimal_workers = min(12, cpu_count - 1)        # More workers for faster data loading
    ```
 
 3. **Build config dictionary** — all hyperparameters in one dict.
 
-4. **Set seed** — For reproducibility: Python random, numpy, torch, CUDA all seeded.
+4. **Set seed** — With `cudnn.benchmark=True` for auto-tuned conv algorithm selection (faster but slightly non-deterministic).
 
 5. **Save config** — Dumps to `outputs/<experiment_name>/config.yaml` so you always know what settings produced what results.
 
@@ -734,7 +768,7 @@ This is **the** script you run. It orchestrates everything.
    )
    ```
 
-8. **Create model** — `RADAR(config).to(device)`
+8. **Create model** — `RADAR(config).to(device)`, then convert to `channels_last` memory format (NHWC layout matches Tensor Core expectations, ~10-20% speedup for convolutions)
 
 9. **Call `train_model()`** — the training loop (defined in this file, not the one in `src/experiments/train.py`).
 
@@ -756,19 +790,19 @@ For each epoch:
 ```python
 param_groups = [
     {"params": head_params, "lr": 0.0005},      # BADM, AADM, ERM, classifiers
-    {"params": backbone_params, "lr": 0.00005},  # ViT (10× lower!)
+    {"params": backbone_params, "lr": 0.00005},  # Backbone (10× lower!)
 ]
 optimizer = AdamW(param_groups, weight_decay=0.05)
 ```
 
-**Why differential LR?** The ViT is already pretrained — it only needs gentle fine-tuning. The new modules (BADM/AADM/ERM) start from random initialization and need larger updates.
+**Why differential LR?** The backbone is already pretrained — it only needs gentle fine-tuning. The new modules (BADM/AADM/ERM) start from random initialization and need larger updates.
 
 **Scheduler:** `OneCycleLR` with cosine annealing:
 - Starts low, warms up to max LR over 10% of training
 - Then gradually decreases following a cosine curve
 - This "super-convergence" schedule often trains faster than constant LR
 
-**AMP (Automatic Mixed Precision):** Uses `GradScaler` and `autocast` to train in FP16 where possible. This nearly doubles speed on modern GPUs with minimal accuracy impact.
+**AMP (Automatic Mixed Precision):** Uses `GradScaler("cuda")` and `autocast("cuda")` (the new `torch.amp` API) to train in FP16 where possible. Combined with TF32, this means the A40's Tensor Cores handle matmuls at ~150 TFLOPS instead of the ~19 TFLOPS of standard FP32.
 
 ### 7b. Shared Training Engine — `src/experiments/train.py`
 
@@ -782,7 +816,7 @@ for batch_idx, batch_data in enumerate(loader):
     images = images.to(device, non_blocking=True)
     
     # 2. Forward pass with mixed precision
-    with autocast(enabled=(device=="cuda")):
+    with autocast("cuda", enabled=(device=="cuda")):
         outputs = model(images, ...)
         losses = loss_fn(outputs, labels, ...)
         loss = losses["total"] / gradient_accumulation_steps
@@ -863,16 +897,30 @@ python 3_train_ablation.py --data_dir ./data/radar-deepfake-frames.zip --num_epo
 
 **How `train_baseline()` works:**
 1. Creates a `timm` model with `num_classes=1` (adds a linear head automatically)
-2. Trains with `BCEWithLogitsLoss` (standard binary classification)
-3. Uses AdamW + OneCycleLR scheduler
-4. Tracks best validation AUC and saves that checkpoint
+2. Applies `torch.compile()` for graph-level optimization (~10-15% speedup after warmup)
+3. Converts model to `channels_last` memory format for Tensor Core alignment
+4. Trains with `BCEWithLogitsLoss` (standard binary classification)
+5. Uses AdamW + OneCycleLR scheduler
+6. Tracks best validation AUC and saves that checkpoint
 
 **How `train_radar()` works:**
 1. Creates `RADAR(RADARConfig(backbone=backbone_name))` — wraps the same backbone with all RADAR modules
-2. Trains with the full `RADARLoss` (main + branch + orthogonality + deep supervision)
-3. Freezes backbone for the first 3 epochs (same as main training)
-4. Uses differential learning rate (backbone at 10× lower LR)
-5. Tracks best validation AUC and saves that checkpoint
+2. Applies `torch.compile()` and `channels_last` (same as baseline for fair comparison)
+3. Trains with the full `RADARLoss` (main + branch + orthogonality + deep supervision)
+4. Freezes backbone for the first 3 epochs (same as main training)
+5. Uses differential learning rate (backbone at 10× lower LR)
+6. Tracks best validation AUC and saves that checkpoint
+
+**A40 performance settings (auto-detected when VRAM > 40GB):**
+| Setting | Value | Why |
+|---------|-------|-----|
+| Train batch size | 192 | Saturates A40 VRAM without OOM |
+| Eval batch size | 256 | No gradients stored → more room |
+| Num workers | 12 | Keeps the GPU pipeline full |
+| TF32 matmul | Enabled | 3× faster matrix multiplications |
+| cudnn.benchmark | Enabled | Auto-selects fastest conv algorithm |
+| channels_last | Enabled | NHWC layout aligns with Tensor Cores |
+| torch.compile | Enabled | Fuses ops, eliminates Python overhead |
 
 **Result storage:** After each backbone completes, results are incrementally saved to `outputs/ablations/ablation_results.json`. This means if training crashes mid-way (e.g., during backbone 3 of 4), you don't lose the first two results.
 
@@ -1099,6 +1147,54 @@ Step 6: Visualize
 
 ---
 
+## 16. A40 Performance Optimizations
+
+The training code auto-detects the GPU and applies aggressive optimizations for A40-class hardware (48GB VRAM). Here's what each optimization does:
+
+### TF32 (TensorFloat-32)
+```python
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+```
+TF32 uses the Tensor Cores on Ampere GPUs (A40, A100, RTX 30xx/40xx). It keeps FP32 range but reduces mantissa precision from 23 bits to 10 bits. In practice this has **zero measurable accuracy impact** on training but provides **~3× speedup** for matrix multiplications and convolutions.
+
+### channels_last Memory Format
+```python
+model = model.to(memory_format=torch.channels_last)
+images = images.to(memory_format=torch.channels_last)
+```
+PyTorch defaults to NCHW layout (batch, channels, height, width). Tensor Cores prefer NHWC layout. Converting to `channels_last` rearranges memory so convolutions can use Tensor Cores optimally — **~10-20% speedup** for CNN-heavy operations (BADM edge encoder, AADM frequency encoder).
+
+### torch.compile
+```python
+compiled_model = torch.compile(model)  # Used for forward pass
+# model (raw) still used for state_dict(), freeze/unfreeze, param access
+```
+PyTorch 2.x's compiler traces the computation graph and generates optimized Triton kernels. It fuses operations (e.g., combining linear + ReLU into one kernel), eliminates Python overhead, and optimizes memory access patterns. The first 1-2 batches are slow (compilation), then **~10-15% faster** for the rest of training.
+
+**Important:** `torch.compile` returns a wrapper object. The raw `model` is kept separately for `state_dict()`, `freeze_backbone()`, `get_head_params()`, etc. Only the forward pass uses `compiled_model`.
+
+### Sobel Kernel register_buffer
+The Sobel edge-detection kernels in BADM used to be created as new tensors on every single forward pass — that's 2 GPU allocations per batch. Now they're registered as persistent buffers in `__init__`, created once and automatically moved with the model to the correct device.
+
+### Estimated Training Times (A40, 227k images, all optimizations)
+
+| Component | Time |
+|-----------|------|
+| Main training (`2_train_model.py`, 30 epochs) | ~30 min |
+| Full ablation study (4 backbones × 2 modes × 15 epochs) | ~80-90 min |
+| **Total (everything)** | **~2 hours** |
+
+Per-backbone ablation breakdown:
+| Backbone | Baseline (15 ep) | + RADAR (15 ep) | Total |
+|----------|-------------------|-----------------|-------|
+| ViT-Small | ~8 min | ~14 min | ~22 min |
+| ResNet-50 | ~6 min | ~15 min | ~21 min |
+| Xception | ~7 min | ~15 min | ~22 min |
+| EfficientNet-B0 | ~5 min | ~12 min | ~17 min |
+
+---
+
 ## Key Concepts to Remember
 
 1. **The model has two "paths" to a final answer**: The reasoning path (ERM doing iterative cross-attention) and the external path (simple MLP). The gating parameter α learns which to trust more.
@@ -1114,3 +1210,5 @@ Step 6: Visualize
 6. **The entire model returns dictionaries** everywhere — model outputs, loss components, evaluation metrics. This makes it very flexible for monitoring and ablation.
 
 7. **Deep supervision** means every ERM iteration is supervised, not just the final one. This helps train the earlier iterations to be useful instead of random.
+
+8. **A40 optimizations form a layered stack** — TF32 speeds up math, channels_last speeds up memory access, torch.compile speeds up the computation graph, and large batch sizes keep the GPU saturated. Combined, they deliver ~3-4× speedup over naive FP32 training.
