@@ -2,6 +2,10 @@
 
 Deep learning architecture for deepfake detection using dual artifact detection modules with iterative evidence refinement.
 
+**📊 Performance**: Test AUC **95.6%** | Test Accuracy **90.1%**
+
+**🔗 Links**: [GitHub](https://github.com/GruheshKurra/radar_deepfake) | [Dataset](https://www.kaggle.com/datasets/gruheshkurra/radar-deepfake-frames) | [Pre-trained Model](https://github.com/GruheshKurra/radar_deepfake/releases/tag/v1.0)
+
 ## Setup
 
 ### Quick Setup (Recommended)
@@ -42,6 +46,8 @@ conda activate ml
 
 Download RADAR Combined Dataset (227k frames, public):
 
+**Kaggle Dataset**: [radar-deepfake-frames](https://www.kaggle.com/datasets/gruheshkurra/radar-deepfake-frames)
+
 ```bash
 ./0_download_combined_dataset.sh
 ```
@@ -51,6 +57,12 @@ The script automatically:
 - No extraction by default (train from ZIP directly)
 - For fast extraction: `python 1_fast_extract.py --num_workers 96`
 - Creates `./data/{train,val,test}` structure when extracted
+
+Or download directly:
+```bash
+curl -L -o ~/Downloads/radar-deepfake-frames.zip \
+  https://www.kaggle.com/api/v1/datasets/download/gruheshkurra/radar-deepfake-frames
+```
 
 ## Training
 
@@ -94,4 +106,10 @@ python 5_visualize_attention.py \
 
 ## Results
 
-Training on RADAR Combined Dataset (227k frames) achieves high validation AUC with convergence in approximately 2 hours on A40 GPU.
+Training on RADAR Combined Dataset (227k frames):
+- **Test AUC**: 95.6%
+- **Test Accuracy**: 90.1%
+- **Best Validation AUC**: 94.5% (epoch 14)
+- **Training Time**: ~2 hours on A40 GPU
+
+Pre-trained model available in [releases](https://github.com/GruheshKurra/radar_deepfake/releases/tag/v1.0).
