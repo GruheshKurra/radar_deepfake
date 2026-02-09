@@ -180,7 +180,7 @@ def main():
         torch.set_float32_matmul_precision('high')
 
         optimal_batch = 192 if gpu_mem_gb > 40 else 64
-        optimal_workers = min(12, max(2, mp.cpu_count() - 1))
+        optimal_workers = min(8, max(2, mp.cpu_count() - 1))
         print(f"GPU: {gpu_name}")
         print(f"VRAM: {gpu_mem_gb:.1f}GB")
         print(f"TF32 enabled, cudnn.benchmark=True")
@@ -333,7 +333,7 @@ def main():
         shuffle=True, num_workers=config["num_workers"],
         pin_memory=True, drop_last=True,
         persistent_workers=config["num_workers"] > 0,
-        prefetch_factor=4 if config["num_workers"] > 0 else None
+        prefetch_factor=2 if config["num_workers"] > 0 else None
     )
 
     val_loader = DataLoader(
@@ -341,7 +341,7 @@ def main():
         shuffle=False, num_workers=config["num_workers"],
         pin_memory=True,
         persistent_workers=config["num_workers"] > 0,
-        prefetch_factor=4 if config["num_workers"] > 0 else None
+        prefetch_factor=2 if config["num_workers"] > 0 else None
     )
 
     test_loader = DataLoader(
@@ -349,7 +349,7 @@ def main():
         shuffle=False, num_workers=config["num_workers"],
         pin_memory=True,
         persistent_workers=config["num_workers"] > 0,
-        prefetch_factor=4 if config["num_workers"] > 0 else None
+        prefetch_factor=2 if config["num_workers"] > 0 else None
     )
 
     model_config = RADARConfig(

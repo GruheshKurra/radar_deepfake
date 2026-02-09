@@ -355,7 +355,7 @@ def main():
             batch_size = args.batch_size
             eval_batch_size = batch_size * 2
 
-        num_workers = min(12, max(2, mp.cpu_count() - 1))
+        num_workers = min(8, max(2, mp.cpu_count() - 1))
         print(f"  TF32 enabled, cudnn.benchmark=True")
         print(f"  Train batch: {batch_size}, Eval batch: {eval_batch_size}, Workers: {num_workers}")
     else:
@@ -433,17 +433,17 @@ def main():
         train_dataset, batch_size=batch_size, shuffle=True,
         num_workers=num_workers, pin_memory=True, drop_last=True,
         persistent_workers=num_workers > 0,
-        prefetch_factor=4 if num_workers > 0 else None)
+        prefetch_factor=2 if num_workers > 0 else None)
     val_loader = DataLoader(
         val_dataset, batch_size=eval_batch_size, shuffle=False,
         num_workers=num_workers, pin_memory=True,
         persistent_workers=num_workers > 0,
-        prefetch_factor=4 if num_workers > 0 else None)
+        prefetch_factor=2 if num_workers > 0 else None)
     test_loader = DataLoader(
         test_dataset, batch_size=eval_batch_size, shuffle=False,
         num_workers=num_workers, pin_memory=True,
         persistent_workers=num_workers > 0,
-        prefetch_factor=4 if num_workers > 0 else None)
+        prefetch_factor=2 if num_workers > 0 else None)
 
     # ---- Which backbones to run ----
     if args.backbone:
