@@ -47,3 +47,6 @@ nohup.out
 *.tmp
 *.temp
 .cache/
+
+# Project files
+CLAUDE.md
