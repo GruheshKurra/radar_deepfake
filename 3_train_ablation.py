@@ -10,7 +10,7 @@ For each backbone architecture:
 Usage:
   python 3_train_ablation.py --data_dir ./data
   python 3_train_ablation.py --data_dir ./data --backbone resnet50
-  python 3_train_ablation.py --data_dir ./data/radar-deepfake-frames.zip --num_epochs 15
+  python 3_train_ablation.py --data_dir ./data/radar-deepfake-frames.zip --num_epochs 10
 """
 
 import torch
@@ -126,10 +126,11 @@ def train_baseline(backbone_name, display_name, train_loader, val_loader, config
             print(f"  torch.compile skipped: {e}")
 
     optimizer = AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=0.05)
-    total_steps = len(train_loader) * config["num_epochs"]
+    grad_accum = config.get("gradient_accumulation_steps", 2)
+    effective_steps = (len(train_loader) // grad_accum) * config["num_epochs"]
     scheduler = OneCycleLR(
         optimizer, max_lr=config["learning_rate"],
-        total_steps=total_steps, pct_start=0.1, anneal_strategy='cos'
+        total_steps=effective_steps, pct_start=0.1, anneal_strategy='cos'
     )
     criterion = nn.BCEWithLogitsLoss()
     scaler = GradScaler("cuda", enabled=(device == "cuda"))
@@ -145,9 +146,10 @@ def train_baseline(backbone_name, display_name, train_loader, val_loader, config
         model.train()
         epoch_loss = 0
         num_batches = 0
+        optimizer.zero_grad(set_to_none=True)
 
         pbar = tqdm(train_loader, desc=f"  Epoch {epoch+1}/{config['num_epochs']}", leave=False)
-        for batch_data in pbar:
+        for batch_idx, batch_data in enumerate(pbar):
             images = batch_data[0].to(device, non_blocking=True)
             if device == "cuda":
                 images = images.to(memory_format=torch.channels_last)
@@ -155,30 +157,33 @@ def train_baseline(backbone_name, display_name, train_loader, val_loader, config
 
             with autocast("cuda", enabled=(device == "cuda")):
                 logits = compiled_model(images)
-                loss = criterion(logits, labels)
+                loss = criterion(logits, labels) / grad_accum
 
             scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad(set_to_none=True)
-            scheduler.step()
 
-            epoch_loss += loss.item()
+            if (batch_idx + 1) % grad_accum == 0 or (batch_idx + 1) == len(train_loader):
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
+                scheduler.step()
+
+            epoch_loss += loss.item() * grad_accum
             num_batches += 1
-            pbar.set_postfix(loss=f"{loss.item():.4f}")
+            pbar.set_postfix(loss=f"{loss.item() * grad_accum:.4f}")
 
         pbar.close()
 
         val_metrics = evaluate_model(model, val_loader, device, is_radar=False)
         avg_loss = epoch_loss / max(num_batches, 1)
-        print(f"  Epoch {epoch+1}/{config['num_epochs']}: "
-              f"loss={avg_loss:.4f}, val_auc={val_metrics['auc']:.4f}, val_acc={val_metrics['accuracy']:.4f}")
-
+        marker = ""
         if val_metrics["auc"] > best_auc:
             best_auc = val_metrics["auc"]
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            marker = " ★"
+        print(f"  Epoch {epoch+1}/{config['num_epochs']}: "
+              f"loss={avg_loss:.4f}, val_auc={val_metrics['auc']:.4f}, val_acc={val_metrics['accuracy']:.4f}{marker}")
 
     if best_state:
         model.load_state_dict(best_state)
@@ -226,10 +231,11 @@ def train_radar(backbone_name, display_name, train_loader, val_loader, config, d
     ]
 
     optimizer = AdamW(param_groups, lr=config["learning_rate"], weight_decay=0.05)
-    total_steps = len(train_loader) * config["num_epochs"]
+    grad_accum = config.get("gradient_accumulation_steps", 2)
+    effective_steps = (len(train_loader) // grad_accum) * config["num_epochs"]
     scheduler = OneCycleLR(
         optimizer, max_lr=[config["learning_rate"], backbone_lr],
-        total_steps=total_steps, pct_start=0.1, anneal_strategy='cos'
+        total_steps=effective_steps, pct_start=0.1, anneal_strategy='cos'
     )
 
     loss_fn = RADARLoss(LossConfig(
@@ -254,9 +260,10 @@ def train_radar(backbone_name, display_name, train_loader, val_loader, config, d
         epoch_loss = 0
         num_batches = 0
         skipped = 0
+        optimizer.zero_grad(set_to_none=True)
 
         pbar = tqdm(train_loader, desc=f"  Epoch {epoch+1}/{config['num_epochs']}", leave=False)
-        for batch_data in pbar:
+        for batch_idx, batch_data in enumerate(pbar):
             images = batch_data[0].to(device, non_blocking=True)
             if device == "cuda":
                 images = images.to(memory_format=torch.channels_last)
@@ -265,37 +272,40 @@ def train_radar(backbone_name, display_name, train_loader, val_loader, config, d
             with autocast("cuda", enabled=(device == "cuda")):
                 outputs = compiled_model(images)
                 losses = loss_fn(outputs, labels)
-                loss = losses["total"]
+                loss = losses["total"] / grad_accum
 
             if not torch.isfinite(loss):
                 skipped += 1
                 continue
 
             scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad(set_to_none=True)
-            scheduler.step()
 
-            epoch_loss += loss.item()
+            if (batch_idx + 1) % grad_accum == 0 or (batch_idx + 1) == len(train_loader):
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
+                scheduler.step()
+
+            epoch_loss += loss.item() * grad_accum
             num_batches += 1
-            pbar.set_postfix(loss=f"{loss.item():.4f}")
+            pbar.set_postfix(loss=f"{loss.item() * grad_accum:.4f}")
 
         pbar.close()
 
         val_metrics = evaluate_model(model, val_loader, device, is_radar=True)
         avg_loss = epoch_loss / max(num_batches, 1)
-        line = (f"  Epoch {epoch+1}/{config['num_epochs']}: "
-                f"loss={avg_loss:.4f}, val_auc={val_metrics['auc']:.4f}, val_acc={val_metrics['accuracy']:.4f}")
-        if skipped > 0:
-            line += f", skipped={skipped}"
-        print(line)
-
+        marker = ""
         if val_metrics["auc"] > best_auc:
             best_auc = val_metrics["auc"]
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            marker = " ★"
+        line = (f"  Epoch {epoch+1}/{config['num_epochs']}: "
+                f"loss={avg_loss:.4f}, val_auc={val_metrics['auc']:.4f}, val_acc={val_metrics['accuracy']:.4f}{marker}")
+        if skipped > 0:
+            line += f", skipped={skipped}"
+        print(line)
 
     if best_state:
         model.load_state_dict(best_state)
@@ -312,13 +322,13 @@ def main():
                         help="Output directory for results")
     parser.add_argument("--backbone", type=str, default=None,
                         help="Run only one backbone (e.g., resnet50). Default: run all.")
-    parser.add_argument("--num_epochs", type=int, default=15,
+    parser.add_argument("--num_epochs", type=int, default=10,
                         help="Training epochs per experiment")
     parser.add_argument("--batch_size", type=int, default=64,
                         help="Batch size")
     parser.add_argument("--learning_rate", type=float, default=0.0005,
                         help="Learning rate")
-    parser.add_argument("--freeze_backbone_epochs", type=int, default=3,
+    parser.add_argument("--freeze_backbone_epochs", type=int, default=2,
                         help="Epochs to freeze backbone in RADAR mode")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed")
@@ -365,6 +375,7 @@ def main():
         "fft_size": 112,
         "dropout": 0.1,
         "freeze_backbone_epochs": args.freeze_backbone_epochs,
+        "gradient_accumulation_steps": 2,
     }
 
     # ---- Load data ----
@@ -481,6 +492,22 @@ def main():
               f"test_auc={baseline_test['auc']:.4f}, test_acc={baseline_test['accuracy']:.4f} "
               f"({baseline_time:.0f}s)")
 
+        # Save baseline checkpoint
+        ckpt_dir = output_dir / "checkpoints"
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        baseline_ckpt = ckpt_dir / f"{backbone_name}_baseline.pt"
+        torch.save({
+            "model_state_dict": baseline_model.state_dict(),
+            "backbone": backbone_name,
+            "mode": "baseline",
+            "test_auc": baseline_test["auc"],
+            "test_acc": baseline_test["accuracy"],
+            "val_auc": baseline_val_auc,
+            "params": baseline_params,
+            "config": config,
+        }, baseline_ckpt)
+        print(f"  ✓ Saved: {baseline_ckpt}")
+
         del baseline_model
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -508,6 +535,22 @@ def main():
         print(f"  ✓ Accuracy improvement: {delta_acc:+.2f}%")
         print(f"  ✓ Parameter overhead:   {radar_params - baseline_params:,} "
               f"({(radar_params / baseline_params - 1) * 100:.1f}% more)")
+
+        # Save RADAR checkpoint
+        ckpt_dir = output_dir / "checkpoints"
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        radar_ckpt = ckpt_dir / f"{backbone_name}_radar.pt"
+        torch.save({
+            "model_state_dict": radar_model.state_dict(),
+            "backbone": backbone_name,
+            "mode": "radar",
+            "test_auc": radar_test["auc"],
+            "test_acc": radar_test["accuracy"],
+            "val_auc": radar_val_auc,
+            "params": radar_params,
+            "config": config,
+        }, radar_ckpt)
+        print(f"  ✓ Saved: {radar_ckpt}")
 
         del radar_model
         if torch.cuda.is_available():
