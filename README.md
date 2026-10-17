@@ -1,10 +1,12 @@
-# RADAR: Reasoning and Artifact Detection for Deepfake Recognition
+# Dual-Stream Artifact Detection with Iterative Evidence Refinement for Frame-Level Deepfake Recognition
 
-Deep learning architecture for deepfake detection using dual artifact detection modules with iterative evidence refinement.
+Code for the paper accepted at **IEEE NEPCON 2026** (Kurra, Pagadala, Batumalay, Boddapati). Internal code name: RADAR.
 
-**📊 Performance**: Test AUC **95.6%** | Test Accuracy **90.1%**
+A ViT-Small backbone with two artifact streams, a Boundary Artifact Detection Module (Sobel edges) and a frequency Artifact Detection Module (three-band FFT), kept apart by an orthogonality penalty, followed by an Evidence Refinement Module that runs three cross-attention iterations with GRU state updates.
 
-**🔗 Links**: [GitHub](https://github.com/GruheshKurra/radar_deepfake) | [Dataset](https://www.kaggle.com/datasets/gruheshkurra/radar-deepfake-frames) | [Pre-trained Model](https://github.com/GruheshKurra/radar_deepfake/releases/tag/v1.0)
+**Headline result (video-disjoint evaluation): 96.3% AUC overall, 87.1% AUC on Celeb-DF.** See [Results](#results) for why this, and not the full-split 95.6%, is the figure to cite.
+
+**Links**: [Dataset (Kaggle)](https://www.kaggle.com/datasets/gruheshkurra/radar-deepfake-frames) | [Pre-trained checkpoint, config and metrics (release v1.0)](https://github.com/GruheshKurra/radar_deepfake/releases/tag/v1.0)
 
 ## Setup
 
@@ -53,7 +55,7 @@ Download RADAR Combined Dataset (227k frames, public):
 ```
 
 The script automatically:
-- Downloads the public dataset (no Kaggle authentication needed)
+- Downloads the public dataset (about 14.4 GB). If the direct link returns 404, sign in to Kaggle and download from the dataset page, or use the Kaggle CLI with an API token
 - No extraction by default (train from ZIP directly)
 - For fast extraction: `python 1_fast_extract.py --num_workers 96`
 - Creates `./data/{train,val,test}` structure when extracted
@@ -106,10 +108,19 @@ python 5_visualize_attention.py \
 
 ## Results
 
-Training on RADAR Combined Dataset (227k frames):
-- **Test AUC**: 95.6%
-- **Test Accuracy**: 90.1%
-- **Best Validation AUC**: 94.5% (epoch 14)
-- **Training Time**: ~2 hours on A40 GPU
+| Evaluation | Test frames | AUC | Accuracy |
+|---|---|---|---|
+| **Video-disjoint subset** (FaceForensics++ and Celeb-DF test frames whose source videos never appear in training) | 5,680 | **96.3%** | |
+| Celeb-DF portion of the video-disjoint subset | | **87.1%** | |
+| Full held-out frame split (random frame-level split, seed 42) | | 95.6% | 90.1% |
 
-Pre-trained model available in [releases](https://github.com/GruheshKurra/radar_deepfake/releases/tag/v1.0).
+### Leakage audit: why the video-disjoint figure is the one to cite
+
+The frame-level split in `src/data/splits.py` shuffles individual frames, so frames from the same source video can land in both training and test. An audit of the test set found that **52.9% of all test frames share a source video with training frames**, rising to **97.3% for WildDeepfake (6,588 of 6,768 frames)**. Frames from a video the model has already seen make the full-split number optimistic, so the paper reports the video-disjoint subset as its main result. The subset is drawn from the existing held-out test set, and the model was not retrained.
+
+This is a single-run study. Baselines and ablations are future work; the ablation scripts in this repository are provided but their results are not reported in the paper.
+
+### Released files
+
+- `best.pth`, `config.yaml` and `metrics.json` in [release v1.0](https://github.com/GruheshKurra/radar_deepfake/releases/tag/v1.0). `metrics.json` holds the full-split test metrics (AUC 0.956, accuracy 0.901) and the per-epoch training history; best validation AUC 94.5% at epoch 14 of 15. Training took about 2 hours on one A40 GPU.
+- The video-disjoint audit script will be added to `src/analysis/` alongside the source-video mapping it needs.
